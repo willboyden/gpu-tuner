@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GPU Tuner</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="top-in">
+    <h1>GPU Tuner</h1>
+    <span id="conn" class="chip" role="status">Connecting…</span>
+    <span class="grow"></span>
+    <span id="meta" class="meta"></span>
+    <button id="theme" class="ghost" type="button" aria-label="Switch between light and dark theme">Theme</button>
+  </div>
+</header>
+
+<main>
+  <div id="banner" class="banner" hidden></div>
+
+  <section id="budget" class="panel" aria-labelledby="budget-h">
+    <h2 id="budget-h">Power budget</h2>
+    <div class="budget-row">
+      <div class="budget-main">
+        <div class="hero"><span id="b-used">–</span><span class="hero-unit"> W capped</span></div>
+        <div id="b-sub" class="sub"></div>
+        <div id="b-bar" class="stack" role="img" aria-label="Combined power caps against the budget"></div>
+        <div id="b-legend" class="legend"></div>
+        <div id="b-edit" class="row">
+          <input id="b-input" type="number" step="1" min="1" aria-label="Combined GPU power budget in watts">
+          <span>W</span>
+          <button id="b-apply" class="ghost small" type="button">Set budget</button>
+          <span id="b-msg" class="msg"></span>
+        </div>
+      </div>
+      <dl class="facts">
+        <div><dt>Drawing now</dt><dd id="b-draw">–</dd></div>
+        <div><dt>Worst case at the wall, at these caps</dt><dd id="b-wall">–</dd></div>
+        <div><dt>Against a wall circuit</dt><dd id="b-circuit">–</dd></div>
+      </dl>
+    </div>
+    <p class="note">The wall figure is an estimate from <code>ops/gpu-power/README.md</code>: about 630&nbsp;W for the
+      CPU, drives, NIC and board on top of the GPU caps, at roughly 90% supply efficiency. Each card's own maximum is
+      not this machine's safe maximum, which is why the two caps share one budget.</p>
+  </section>
+
+  <section id="gpus" class="gpu-grid" aria-label="Cards"></section>
+
+  <section id="history" aria-labelledby="hist-h">
+    <div class="filters">
+      <h2 id="hist-h">History</h2>
+      <div id="windows" class="seg" role="group" aria-label="Time range"></div>
+      <span class="grow"></span>
+      <span id="bucket" class="meta"></span>
+      <button id="table-toggle" class="ghost" type="button" aria-expanded="false">Show as table</button>
+    </div>
+    <div id="charts" class="chart-grid"></div>
+    <div id="table" class="panel table-wrap" hidden></div>
+  </section>
+
+  <section class="panel" aria-labelledby="ex-h">
+    <h2 id="ex-h">Left out on purpose</h2>
+    <p class="sub">The driver exposes more than this page does. These were excluded because a wrong value cannot be
+      made safe by clamping it.</p>
+    <dl class="excluded">
+      <div><dt>Core and memory clock offsets (overclock / undervolt)</dt>
+        <dd>The driver accepts a wide offset range on most cards, but no range of offsets is known-stable across
+          arbitrary hardware, and on an inference and fine-tuning box an unstable offset shows up as quietly wrong
+          results or Xid faults rather than a clean crash.</dd></div>
+      <div><dt>Raising the thermal limits or a temperature target</dt>
+        <dd>Not supported on most cards (NVML reports the acoustic thresholds as unsupported). Each card's own
+          slowdown and shutdown points, whatever they are, stay put — this page reads them, never writes them.</dd></div>
+      <div><dt>Toggling ECC, MIG or compute mode</dt>
+        <dd>ECC mode and its error counts are shown read-only when a card supports them; toggling ECC needs a
+          reboot and changes usable VRAM, and MIG/exclusive-process mode can break other software sharing the
+          card. None of these three is offered as a write.</dd></div>
+      <div><dt>Turning persistence mode off</dt>
+        <dd>Held on by the daemon (its actual on/off state is shown read-only). With it off, the driver drops the
+          power caps whenever the last CUDA client exits.</dd></div>
+      <div><dt>Chassis fans</dt>
+        <dd>On this lab's own board they're BMC-owned and the motherboard's PWM registers do nothing; whether
+          that's true elsewhere depends on the board, so this stays out of scope everywhere.</dd></div>
+    </dl>
+  </section>
+</main>
+<script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+#!/usr/bin/python3
+# gpu-tuner UI entry point (runs as you, never root):  gpu-tuner serve | gpu-tuner open
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from gpu_tuner.server import main  # noqa: E402
+
+sys.exit(main())

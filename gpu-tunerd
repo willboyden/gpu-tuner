@@ -1,0 +1,11 @@
+#!/usr/bin/python3 -I
+# gpu-tunerd entry point. -I: a root process must not pick up PYTHONPATH or a user site dir.
+# install.sh copies this file and gpu_tuner/ to /usr/local/lib/gpu-tuner (root-owned); the
+# daemon is never run as root from this user-writable repo.
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from gpu_tuner.daemon import main  # noqa: E402
+
+sys.exit(main())

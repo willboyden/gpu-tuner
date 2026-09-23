@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=GPU Tuner
+Comment=Power caps, fan curves and clock caps for every NVIDIA card on this box
+Exec=__HERE__/gpu-tuner open
+Icon=__HERE__/icon.svg
+Terminal=false
+Categories=System;Monitor;
+Keywords=GPU;fan;power;NVIDIA;

@@ -1,0 +1,52 @@
+[Unit]
+Description=gpu-tuner control daemon (GPU power caps, fan curves, clock caps)
+Documentation=file:__HERE__/README.md
+# NVML must see the cards; nvidia-persistenced keeps the driver loaded so we do not race a cold
+# driver at boot.
+After=nvidia-persistenced.service
+Wants=nvidia-persistenced.service
+# These two are superseded by this unit (install.sh disables them). Two fan writers would fight,
+# and this daemon re-applies the power caps itself.
+Conflicts=gpu-fan-curve.service gpu-power-limit.service
+ConditionPathExists=/usr/local/lib/gpu-tuner/gpu-tunerd
+
+[Service]
+Type=notify
+# Root: fan and power writes are privileged on these cards (non-root returns NO_PERMISSION).
+# The code runs from the ROOT-OWNED copy under /usr/local/lib, never from the user's repo.
+ExecStart=/usr/local/lib/gpu-tuner/gpu-tunerd
+# Whatever the exit — clean stop, crash, or a watchdog kill — hand the fans back to the driver.
+# Power caps are deliberately left in place (a stopped unit must not uncap a card to 600 W).
+ExecStopPost=/usr/local/lib/gpu-tuner/gpu-tunerd --restore-fans
+KillSignal=SIGTERM
+TimeoutStopSec=20
+# The daemon pings every fan-loop tick (2 s); a hung loop is killed and restarted.
+WatchdogSec=30
+Restart=on-failure
+RestartSec=5
+# 0711, not 0750: the unit has no Group=, so this directory is root:root and the configured
+# uid (not in the root group) needs the traverse (x) bit to reach a path it already knows.
+# The socket itself stays 0600 and chowned to that uid, so this grants no listing, just lookup.
+RuntimeDirectory=gpu-tuner
+RuntimeDirectoryMode=0711
+StateDirectory=gpu-tuner
+StateDirectoryMode=0700
+ConfigurationDirectory=gpu-tuner
+
+# Hardening. The daemon needs /dev/nvidia* and the socket dir, nothing else.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_SYS_ADMIN
+
+[Install]
+WantedBy=multi-user.target

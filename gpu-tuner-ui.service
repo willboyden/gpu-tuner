@@ -1,0 +1,29 @@
+# User unit: runs as you, serves the page on 127.0.0.1:8765, talks to gpu-tunerd over its socket.
+# install.sh fills in __HERE__, puts it in ~/.config/systemd/user/ and enables it with `systemctl --user`.
+[Unit]
+Description=gpu-tuner web UI (127.0.0.1:8765)
+Documentation=file:__HERE__/README.md
+
+[Service]
+Type=simple
+ExecStart=__HERE__/gpu-tuner serve
+Restart=on-failure
+RestartSec=3
+
+# Hardening. This process parses attacker-reachable HTTP input (a security review flagged it as
+# having none, unlike its root sibling gpu-tunerd.service — this brings it to a comparable
+# baseline). It needs: outbound-free but listening TCP on loopback (AF_INET/AF_INET6), the
+# daemon's Unix socket (AF_UNIX), and read+write on its own config/session dir.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.config/gpu-tuner
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictRealtime=yes
+
+[Install]
+WantedBy=default.target
