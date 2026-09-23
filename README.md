@@ -223,7 +223,7 @@ caught), the budget editor persisting live, power/fan/clock apply and read-back,
 editing across a re-render, baseline reset, no JS errors, no overflow at phone width. Nothing is
 written to the cards.
 
-Both suites pass as of 2026-09-23 on driver 595.91 (the live one: 27/27). Two bugs found and
+Both suites pass as of 2026-09-23 on driver 595.91 (the live one: 28/28). Two bugs found and
 fixed while building this pass, both live only on this exact machine: `nvml.py`'s ECC counter
 constant is `NVML_VOLATILE_ECC`, not `…_ECC_ERRORS`, on the installed nvidia-ml-py; and
 `syncPower()`/`syncFan()`/`syncClock()`'s message recompute wasn't guarded by `pKeep`/`fKeep`/
