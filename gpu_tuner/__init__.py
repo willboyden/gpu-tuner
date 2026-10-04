@@ -10,4 +10,4 @@ And one page for all of them:
   hub.py     talks to every machine's node (hosts.py says which, and how), keeping the history.
 """
 
-__version__ = "1.1.1"
+__version__ = "1.1.2"

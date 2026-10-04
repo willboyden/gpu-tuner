@@ -6,6 +6,7 @@ test here is one that CAN fail — each asserts a specific accept/reject or a sp
 """
 import json
 import os
+import socket
 import sys
 import tempfile
 import unittest
@@ -574,6 +575,41 @@ class Seed(unittest.TestCase):
         d = Daemon(Nvml(lib=FakeGB10()), {"gpu_budget_w": None, "allowed_uid": 1000, "interval_s": 2.0}, out)
         d.load_state()
         self.assertEqual((d.warnings, d.settings[GB10]["power_w"]), ([], None))
+
+
+class HostileRequests(unittest.TestCase):
+    """Whatever a client on the socket sends, the daemon answers and keeps running."""
+
+    def ask(self, d, payload):
+        a, b = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.addCleanup(a.close)
+        self.addCleanup(b.close)
+        b.sendall(payload)
+        daemon_mod.serve_one(a, d, os.getuid())       # must not raise
+        return b.recv(65536)                          # raw: parsed by the caller
+
+    def test_deep_nesting_is_a_bad_request_not_a_crash(self):
+        d, _ = make_daemon(tempfile.mkdtemp())
+        real = daemon_mod.json.loads
+
+        def nested_too_deep(_data):                   # what Python <= 3.13 does at ~10,000 levels
+            raise RecursionError("maximum recursion depth exceeded while decoding a JSON array")
+        daemon_mod.json.loads = nested_too_deep       # (this is the json module itself: restore before parsing)
+        try:
+            raw = self.ask(d, b"[" * 20000 + b"]" * 20000 + b"\n")
+        finally:
+            daemon_mod.json.loads = real
+        r = json.loads(raw)
+        self.assertFalse(r["ok"])
+        self.assertIn("bad request", r["error"])
+        r = json.loads(self.ask(d, b"[" * 20000 + b"]" * 20000 + b"\n"))   # for real, on this Python
+        self.assertFalse(r["ok"])
+
+    def test_an_unexpected_error_inside_a_request_is_answered(self):
+        d, _ = make_daemon(tempfile.mkdtemp())
+        d.handle = lambda req: (_ for _ in ()).throw(KeyError("boom"))
+        r = json.loads(self.ask(d, b'{"op": "status"}\n'))
+        self.assertEqual(r, {"ok": False, "error": "internal error; see journalctl -u gpu-tunerd"})
 
 
 class SocketRace(unittest.TestCase):

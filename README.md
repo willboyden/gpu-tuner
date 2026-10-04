@@ -30,36 +30,168 @@ lab's services: disabled by the installer, kept on disk, restored by `--uninstal
 
 ## Install
 
+### Requirements
+
+- Linux with systemd, an NVIDIA driver and `nvidia-smi`. x86_64 and aarch64 (the monitor-only node
+  runs on DGX Spark; the root daemon has only been run on x86_64).
+- The **system** python (`/usr/bin/python3`) able to `import pynvml`. On Debian/Ubuntu:
+  `sudo apt install python3-pynvml`. The root daemon runs with `python3 -I`, so a pip install into
+  your user or a venv is not enough.
+- `sudo` on every machine that gets the root daemon. Nothing else needs root.
+- A browser on the machine with the page. For other machines: OpenSSH on both ends, and an ssh
+  login from the page's machine to each one (`ssh <host> true` works). The loop under "Several
+  machines at once" also needs `git` and `tar`.
+
+Every machine gets one of three modes:
+
+| Mode | Command | Installs | Use it for |
+|---|---|---|---|
+| page + control | `./install.sh` | root daemon, the page (user unit), app launcher | the machine you sit at |
+| control only | `./install.sh --no-ui` | root daemon | another machine whose GPUs you want to change from your page |
+| monitor only | `./install.sh --node` | just the code, no services | another machine you only want to watch — or one whose GPUs expose nothing to set (DGX Spark) |
+
+Every mode puts the code at `/usr/local/lib/gpu-tuner` (root-owned); add `--dry-run` to any of them
+to print each privileged command and change nothing. Run `install.sh` as yourself, not with `sudo`:
+it asks for sudo itself, and on first install records your uid as the one allowed to talk to the
+daemon (to change it later: edit `allowed_uid` in `/etc/gpu-tuner/config.json`, then
+`sudo systemctl restart gpu-tunerd`).
+
+### 1. The machine you sit at
+
 ```bash
-./install.sh --dry-run   # prints every privileged command, changes nothing
-./install.sh             # asks for sudo; rolls back to the old units on any failure
+git clone https://github.com/willboyden/gpu-tuner && cd gpu-tuner
+./install.sh --dry-run   # read what it will do
+./install.sh             # asks for sudo; rolls back on any failure
 ./gpu-tuner open         # signs your browser in (also "GPU Tuner" in the app launcher)
 ```
 
-Needs `nvidia-smi` and the system python's `pynvml` (`apt install python3-pynvml`). Two more modes,
-for machines another machine's page will manage: `--no-ui` (the daemon, no page or launcher) and
-`--node` (just the code, no services: monitor-only, or a machine whose GPUs have nothing to set).
+The page runs from this checkout (the user unit points at it), so keep the checkout where it is.
+That's all a single machine needs. Without the install, `./gpu-tuner serve` runs the page
+**monitor-only**: every reading and chart is live, each card's envelope is shown, the controls are
+locked.
 
-Also an **upgrade** path: run it again after pulling changes. It's idempotent (existing
-`config.json`/`state.json` are kept, not reseeded) and always `restart`s both units so an updated
-daemon or UI actually takes effect, not just gets installed alongside a still-running old one.
+### 2. Each other machine (optional)
 
-The takeover keeps the caps currently in force (the installer seeds the daemon's state from
-`nvidia-smi` first, and seeds `gpu_budget_w` to their sum, or `null` if no card reports a settable
-cap). Fans stay on the driver's own curve until you pick one — unless the machine already ran the
-old `gpu-fan-curve.service`, in which case they stay on the curve it ran. One caveat, stated so nobody is surprised: stopping
-`gpu-power-limit` runs its `ExecStop`, which restores factory caps for the second or two before
-`gpu-tunerd` starts and re-applies the seeded ones.
+As the user your page will log in as (the daemon only answers that user):
 
-Without the install the page still runs in **monitor-only** mode (`gpu-tuner serve`): every
-reading and chart is live, each card's envelope is shown, the controls are locked.
+```bash
+git clone https://github.com/willboyden/gpu-tuner && cd gpu-tuner   # or copy this directory over
+./gpu-tuner probe | less        # optional, read-only: what NVML exposes on this machine
+./install.sh --no-ui            # control only — or ./install.sh --node for monitor only
+```
+
+`--node` ends by printing what the machine reports (`gpu-tuner node --check`); if a GPU shows
+`no settable power limit · fans 0 · no clock cap`, monitor-only is all it can do anyway.
+
+### 3. Connect them
+
+On the machine with the page:
+
+```bash
+./gpu-tuner hosts --init-key --from 10.0.0.5     # this machine's address, as the others see it
+```
+
+That creates the page's own ssh key (`~/.config/gpu-tuner/ssh/id_ed25519`, mode 0600, never
+printed; no passphrase so the page's service can use it unattended) and prints **one line** to add
+to `~/.ssh/authorized_keys` on every other machine:
+
+```
+restrict,from="10.0.0.5",command="/usr/local/lib/gpu-tuner/gpu-tuner node --stdio" ssh-ed25519 AAAA… gpu-tuner-hub
+```
+
+That key can run the node and nothing else: no shell, no forwarding, no pty, and — with `--from`
+(comma-separate several addresses if the machines see this one on different networks) — only from
+here. Then:
+
+1. Connect to each machine once by hand (`ssh <host> true`), so its host key is checked and pinned:
+   the page only *reads* `known_hosts` and refuses unknown or changed keys.
+2. List the machines in `~/.config/gpu-tuner/hosts.json` and `chmod 600` it (see
+   `examples/hosts.example.json` and the field notes under [Multiple machines](#multiple-machines)):
+
+   ```json
+   {"hosts": [
+     {"id": "local", "label": "Workstation",
+      "wall": {"non_gpu_dc_w": 630, "psu_efficiency": 0.9, "circuits": {"15 A": 1440, "20 A": 1920}}},
+     {"id": "gpu-box-2", "label": "GPU box 2", "ssh": "gpu-box-2"},
+     {"id": "edge-1", "label": "Edge 1", "ssh": "me@10.0.0.21", "port": 2222}
+   ]}
+   ```
+
+3. Check, then restart the page so it reads the list:
+
+   ```bash
+   ./gpu-tuner hosts --check            # connects to each machine once and says exactly what's wrong
+   systemctl --user restart gpu-tuner-ui
+   ```
+
+### Several machines at once
+
+Steps 2 and 3 for a list of machines, from the page's git checkout. It uses your *existing* ssh access
+to copy the code (committed files only, via `git archive`), install (sudo asks for a password on
+each machine, hence `ssh -t`) and add the page's key line once; after that the page only ever logs
+in with its own restricted key. Your first ssh to each machine here also checks and pins its host
+key. (It assumes `apt`; adjust for your distro.)
+
+```bash
+PAGE_IP=10.0.0.5          # this machine's address as the others see it; comma-separate several
+LINE=$(./gpu-tuner hosts --init-key --from "$PAGE_IP" | grep '^restrict,')
+if [ -z "$LINE" ]; then echo "init-key printed no key line; stopping"; else
+for h in gpu-box-2 gpu-box-3; do                  # your ssh aliases or user@host
+  mode=--no-ui                                    # or --node for monitor only
+  git archive HEAD | ssh "$h" 'mkdir -p gpu-tuner && tar -x -C gpu-tuner' &&
+  ssh -t "$h" "/usr/bin/python3 -I -c 'import pynvml' 2>/dev/null || sudo apt install -y python3-pynvml; ~/gpu-tuner/install.sh $mode" &&
+  printf '%s\n' "$LINE" | ssh "$h" 'umask 077; mkdir -p ~/.ssh; chmod 700 ~/.ssh; f=~/.ssh/authorized_keys; read -r l
+[ -n "$l" ] || { echo "empty key line: nothing added" >&2; exit 1; }
+[ -s "$f" ] && [ -n "$(tail -c1 "$f")" ] && echo >> "$f"
+grep -qxF "$l" "$f" 2>/dev/null || printf "%s\n" "$l" >> "$f"; chmod 600 "$f"'
+done
+fi
+```
+
+The key line reaches each machine on stdin, never as a command argument; it is added once (a
+second run adds nothing), on its own line even if `authorized_keys` doesn't end in a newline, and
+only after that machine's install succeeded. Then write `hosts.json`, `./gpu-tuner hosts --check`
+and restart the page as in step 3.
+
+### Upgrading
+
+Pull (or copy) the new version and run the same `install.sh` mode again — on this machine and on
+each other one. It's idempotent: `config.json` (your budget) and `state.json` (your saved power caps,
+fan curves and clock caps) are kept, never reseeded, and both services are restarted so the new code
+actually runs. Check with `./gpu-tuner hosts --check` afterwards — it prints each machine's version.
+Machines on different versions keep working together as long as they speak the same protocol; one
+whose protocol is too old or too new is shown on the page as incompatible rather than half-working.
+
+### Uninstalling
+
+- This machine, or any other (from its checkout — `~/gpu-tuner` if you used the loop above):
+  `./install.sh --uninstall`. It removes the services and the code under
+  `/usr/local/lib/gpu-tuner`, hands the fans back to the driver (power caps stay as they are), and
+  re-enables `gpu-fan-curve`/`gpu-power-limit` if this machine had them. `/etc/gpu-tuner` and
+  `/var/lib/gpu-tuner` are kept; delete them by hand for a clean slate.
+- On each other machine, also remove the page's key: delete the line ending in `gpu-tuner-hub` from
+  `~/.ssh/authorized_keys`.
+- On the page's machine: `rm -r ~/.config/gpu-tuner/ssh ~/.config/gpu-tuner/hosts.json`.
+
+### What install.sh does on first install
+
+It takes over the caps currently in force: it seeds the daemon's state from `nvidia-smi` and seeds
+`gpu_budget_w` to their sum (or `null` if no card reports a settable cap). Fans stay on the driver's
+own curve until you pick one — unless the machine already ran a `gpu-fan-curve.service`, in which
+case they stay on the curve it ran. Where `gpu-fan-curve.service` / `gpu-power-limit.service` exist
+(the original lab's services) they are disabled, kept on disk, and restored by `--uninstall`; one
+caveat, stated so nobody is surprised: stopping `gpu-power-limit` runs its `ExecStop`, which restores
+factory caps for the second or two before `gpu-tunerd` starts and re-applies the seeded ones. It
+finishes by asking the page itself whether it reaches the daemon, not just whether the services are
+"active".
 
 ## Multiple machines
 
 One page, every machine: a **fleet strip** (a row per GPU, with each machine's link state) and a
 tab per machine with that machine's cards, budget and charts. With only one machine nothing
 changes. Nothing new listens on the network anywhere — the page reaches the other machines over
-ssh, and each machine's own root daemon stays the authority over its own cards.
+ssh, and each machine's own root daemon stays the authority over its own cards. Setup is steps 2
+and 3 of [Install](#install).
 
 ```
 this machine                                         each other machine
@@ -67,45 +199,7 @@ gpu-tuner serve (page) ── ssh, restricted key ──▶  gpu-tuner node --st
       └── subprocess ──▶ gpu-tuner node --stdio ──unix sock──▶ gpu-tunerd (root, here)
 ```
 
-**Set up each other machine** (as the user the page will log in as):
-
-```bash
-git clone https://github.com/willboyden/gpu-tuner && cd gpu-tuner    # or copy this directory over
-sudo apt install python3-pynvml                                       # if `python3 -c 'import pynvml'` fails
-./install.sh --no-ui        # daemon + code (asks for sudo)  — or --node for monitor-only, no root service
-```
-
-**Then on the machine with the page:**
-
-```bash
-./gpu-tuner hosts --init-key --from <this machine's IP as the others see it>
-```
-
-That creates the page's own key (`~/.config/gpu-tuner/ssh/id_ed25519`, no passphrase so the
-service can use it unattended) and prints one line to add to `~/.ssh/authorized_keys` on every
-managed machine:
-
-```
-restrict,from="10.0.0.5",command="/usr/local/lib/gpu-tuner/gpu-tuner node --stdio" ssh-ed25519 AAAA… gpu-tuner-hub
-```
-
-That key can run the node and nothing else — no shell, no forwarding, no pty — and, with
-`--from`, only from the page's machine (without it the command warns: a copy of the key would
-work from anywhere). List the machines in `~/.config/gpu-tuner/hosts.json` (`chmod 600`; see
-`examples/hosts.example.json`), check, and restart the page:
-
-```json
-{"hosts": [
-  {"id": "local", "label": "Workstation",
-   "wall": {"non_gpu_dc_w": 630, "psu_efficiency": 0.9, "circuits": {"15 A": 1440, "20 A": 1920}}},
-  {"id": "gpu-box-2", "label": "GPU box 2", "ssh": "gpu-box-2"}
-]}
-```
-
-```bash
-./gpu-tuner hosts --check            # connects to each machine once and says exactly what's wrong
-systemctl --user restart gpu-tuner-ui
-```
+`hosts.json`, field by field:
 
 - `ssh` is what you'd type after `ssh`: a `~/.ssh/config` alias or `user@host` (never an option —
   anything starting with `-` is refused). Your ssh config still applies; `known_hosts` is only
@@ -146,9 +240,8 @@ the desktop user can widen a limit.
 - **Power.** The card's own NVML range, narrowed by its profile if one exists, then that
   machine's combined budget. Lowering is always allowed (an over-budget state must be walkable back
   down); raising past the budget needs an explicit confirm click, which the page's `set_power`
-  request carries as `confirm_override`. This lab's two cards' presets carry the measured
-  numbers from `notes/findings/gpu-fan-curve-and-power-caps.md` so a choice is informed, not a
-  guess. A card with no profile can be lowered but never raised above its factory default.
+  request carries as `confirm_override`. The two profiled cards' presets carry numbers measured
+  on those cards, so a choice is informed, not a guess. A card with no profile can be lowered but never raised above its factory default.
   The combined budget itself is a `set_budget` request, persisted to `config.json` by the
   daemon — nothing enforces it beyond that one comparison, so raising it is instant and never
   needs a restart.
@@ -232,6 +325,27 @@ page come from `/proc/<pid>/comm`, never `cmdline` (command lines here carry API
 a fixed speed until the next write, so a curve has to be re-evaluated as temperature moves.
 
 ## Security review
+
+### 1.1.2 (2026-10-04)
+
+An independent audit before publishing the install docs found:
+
+- **A client on the daemon's socket could crash the root daemon** — fixed. JSON nested about
+  10,000 levels deep (20 KB, under the 64 KiB request cap) makes Python 3.12/3.13's parser raise
+  `RecursionError`, which `serve_one` didn't catch, so the daemon exited (fans went back to the
+  driver; systemd restarted it 5 s later). Any process running as the daemon's configured user could
+  repeat it at will. Python 3.14 parses that depth without error, which is why it went unseen. Now
+  it's a "bad request" reply, and no exception from a request or a client can end the daemon's
+  loop. Covered by tests that pass on 3.12 and 3.14 and fail on 3.12 without the fix.
+- **Sign-in link on the command line.** `gpu-tuner open` hands the single-use, 60 s sign-in link to
+  `xdg-open` as an argument, so for that minute another *local user* could read it from `/proc`
+  (unless `/proc` is mounted `hidepid=2`) and use it first. On a machine shared with other users,
+  run `gpu-tuner open --print-url` and paste the link instead.
+- **Signing everyone out.** The session never expires on its own: delete `~/.config/gpu-tuner/token`
+  and restart the page (`systemctl --user restart gpu-tuner-ui`) to revoke every signed-in browser.
+- The multi-machine install loop now copies only committed files, checks the system python the
+  daemon actually uses, refuses an empty key line, and appends the key safely to an
+  `authorized_keys` that doesn't end in a newline. Its append step is tested against scratch files.
 
 ### Multiple machines (1.1.0, 2026-10-03)
 
@@ -327,7 +441,7 @@ at the console to fix it. Same caution applies to further `gpu-tunerd.service` h
 | `/var/lib/gpu-tuner/state.json` | the applied settings; re-validated on every start |
 | `/run/gpu-tuner/control.sock` | daemon socket |
 | `~/.config/gpu-tuner/` | session token and sign-in nonces (0600); `hosts.json` and `ssh/id_ed25519` if you manage other machines |
-| `~/.config/systemd/user/gpu-tuner-ui.service`, `~/.local/share/applications/gpu-tuner.desktop`, `icon.svg` | UI unit and launcher |
+| `~/.config/systemd/user/gpu-tuner-ui.service`, `~/.local/share/applications/gpu-tuner.desktop` | UI unit and launcher. Both point into the checkout (the page's code, the launcher's `icon.svg`), so keep it where it is |
 
 ## Operate
 
@@ -352,13 +466,14 @@ and logged exactly as it would be; nothing is written to the cards.
 
 `bash tests/gpu-tuner-test.sh` (from this directory) — offline, no GPU, no root, no ssh:
 
-- `tests/gpu-tuner-test.py`, 70 tests against fake NVML (`tests/fakes.py`): budget (soft override,
+- `tests/gpu-tuner-test.py`, 72 tests against fake NVML (`tests/fakes.py`): budget (soft override,
   `BudgetExceeded` vs a hard `SafetyError`, no-budget machines), ranges (including "NVML reports
   none" being `None`, never a 0-0 W range), per-card floor, curve rules, hysteresis, faults,
   persistence, drift re-apply, the restart-race socket handoff, default fan curves that fit each
   card's own thresholds, a GB10-like machine (no writes,
   no lasting warnings, unified memory), an older pynvml missing bindings, the install seed
-  (`[N/A]`, mixed, no budget, fan default).
+  (`[N/A]`, mixed, no budget, fan default), and hostile requests on the daemon's socket (deep
+  nesting, an unexpected error inside a request: both answered, the daemon keeps running).
 - `tests/gpu-tuner-fleet-test.py`, 36 tests, ~25 s: the protocol (NaN, `1e999`, oversize,
   nesting, huge ints, whitelists), `hosts.json` (injection attempts, file ownership/mode/symlink,
   the exact ssh argv, no key means no ssh, the restricted-key line), the node (hello first, only
@@ -382,9 +497,12 @@ explanation. Nothing is written to the cards.
 
 All three pass as of 2026-10-04 on driver 595.91 (the live one: 42/42).
 
-Also run against real machines on 2026-10-03: a page on the RTX PRO 6000 workstation managing an
-RTX 5090 box (x86_64, driver 595.91.07, `--no-ui`: power 400-575 W settable, three fans, clock cap
-up to 3,090 MHz, daemon running) and four DGX Sparks (`--node`, read-only as above), every one
-reached through the restricted forced-command key. **Not yet exercised on real hardware:** an
-actual power, fan or clock change made from the page on a *remote* machine — that request path is
-covered end to end by the dry-run and fake-machine tests above, not yet by a real write.
+Also run against real machines, set up with the "several machines at once" loop above: a page on the
+RTX PRO 6000 workstation managing an RTX 5090 box (x86_64, driver 595.91.07, `--no-ui`: power
+400-575 W settable, three fans, clock cap up to 3,090 MHz) and four DGX Sparks (`--node`, read-only
+as above), every one reached through the restricted forced-command key (2026-10-03). On 2026-10-04
+real changes were made from the page to the remote 5090 — its machine budget 425 → 450 W, then its
+power limit 425 → 450 W — each applied by that machine's daemon and read back by NVML on that
+machine, and an over-budget change was refused there as it should be. Not yet exercised on a
+remote machine from the page: a fan-curve or clock-cap change (same request path, covered by the
+dry-run and fake-machine tests).

@@ -533,10 +533,16 @@ def serve_one(conn, daemon, allowed_uid):
             if len(buf) > MAX_REQUEST:
                 raise ValueError("request too large")
             req = json.loads(buf.split(b"\n", 1)[0])
-        except ValueError as e:
-            resp = {"ok": False, "error": f"bad request: {e}"}
+        except (ValueError, RecursionError) as e:
+            # RecursionError: ~10,000 levels of nesting (20 KB, under MAX_REQUEST) on Python <= 3.13.
+            # Uncaught, it ended the daemon — a same-uid process could knock out fan control at will.
+            resp = {"ok": False, "error": f"bad request: {str(e)[:120]}"}
         if resp is None:
-            resp = daemon.handle(req)
+            try:
+                resp = daemon.handle(req)
+            except Exception as e:      # noqa: BLE001 — no request may end the fan-safety loop
+                log(f"FAULT handling a request: {type(e).__name__}: {e}")
+                resp = {"ok": False, "error": "internal error; see journalctl -u gpu-tunerd"}
         if isinstance(req, dict) and req.get("op") != "status":
             detail = {k: v for k, v in req.items()
                       if k in ("op", "uuid", "watts", "mode", "manual_pct", "mhz", "confirm_override")}
@@ -605,6 +611,8 @@ def main(argv=None):
                     serve_one(conn, d, cfg["allowed_uid"])
                 except OSError as e:
                     log(f"client error: {e}")
+                except Exception as e:  # noqa: BLE001 — belt and braces: one client never ends the daemon
+                    log(f"FAULT serving a client: {type(e).__name__}: {e}")
     finally:
         d.restore_fans()
         if srv is not None:
