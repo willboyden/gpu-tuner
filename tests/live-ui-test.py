@@ -326,6 +326,18 @@ def main():
             path = os.path.join(tmp, f"rec-{hid}.jsonl")
             recs[hid] = open(path).read().count("set_power") if os.path.exists(path) else 0
         check(recs == {"ws": 0, "rtx5090": 1}, f"...and reached ONLY the 5090's daemon ({recs})")
+        r = browser.js("""
+          const card = document.querySelector('.hostview:not([hidden]) .gpu');
+          const num = card.querySelector('input[type=number]'); num.value = 575; num.dispatchEvent(new Event('input', {bubbles:true}));
+          return card.querySelector('.msg').textContent;""")
+        check(r.startswith("575 W is 25 W over this machine’s 550 W budget"), f"one-card over-budget warning reads right ({r})")
+        browser.js("""
+          const card = document.querySelector('.hostview:not([hidden]) .gpu');
+          [...card.querySelectorAll('button')].find(x => x.textContent === 'Apply power limit').click();""")
+        time.sleep(2.5)
+        r = browser.js("return document.querySelector('.hostview:not([hidden]) .gpu .msg').textContent")
+        check(r.startswith("575 W is 25 W over this machine's 550 W GPU budget") and "other card" not in r,
+              f"...and so does the daemon's refusal, with the browser still up ({r})")
         browser.js("document.getElementById('tab-gone').click()")
         time.sleep(1.5)
         r = browser.js("return document.querySelector('.hostview:not([hidden]) .banner').textContent")

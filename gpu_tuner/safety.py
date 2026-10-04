@@ -203,16 +203,15 @@ def check_power(uuid: str, watts, ranges: dict, current: dict, budget_w: int,
     if budget_w is not None and total > budget_w and watts > current.get(uuid, 0) and not confirm_override:
         others_w = total - watts
         other_uuids = [u for u in current if u != uuid]
-        if not other_uuids:
-            lead = f"{watts} W is"
-        elif len(other_uuids) == 1:
-            lead = f"{watts} W here plus {others_w} W on the other card is"
+        if not other_uuids:              # a one-card machine: there is no "other card" to lower
+            msg = (f"{watts} W is {total - budget_w} W over this machine's {budget_w} W GPU budget. "
+                   f"Raise the budget, or confirm to exceed it anyway.")
         else:
-            lead = f"{watts} W here plus {others_w} W across the other {len(other_uuids)} cards is"
-        raise BudgetExceeded(
-            f"{lead} {total} W, over the {budget_w} W combined GPU budget. Lower another card "
-            f"first, raise the budget, or confirm to exceed it anyway.",
-            total_w=total, budget_w=budget_w, others_w=others_w)
+            lead = (f"{watts} W here plus {others_w} W on the other card is" if len(other_uuids) == 1 else
+                    f"{watts} W here plus {others_w} W across the other {len(other_uuids)} cards is")
+            msg = (f"{lead} {total} W, over the {budget_w} W combined GPU budget. Lower another card "
+                   f"first, raise the budget, or confirm to exceed it anyway.")
+        raise BudgetExceeded(msg, total_w=total, budget_w=budget_w, others_w=others_w)
     return watts
 
 

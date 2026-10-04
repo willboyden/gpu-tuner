@@ -4,7 +4,7 @@ live UI test. Production has no flag for this: here the machines' transports are
 
   ws      a 2x RTX PRO 6000 box (Max-Q + Workstation) with a real daemon over fake NVML, a wall model
   gb10    a DGX Spark-like GB10, monitor-only (no daemon)
-  rtx5090 a GeForce RTX 5090 with a real daemon; every change it receives is recorded
+  rtx5090 a GeForce RTX 5090 with a real daemon and a 550 W budget; every change it receives is recorded
   gone    a machine whose node exits at once: always unreachable
 
   fake_hub.py --port 8767 --tmp DIR
@@ -35,7 +35,7 @@ def main():
                 "--record", os.path.join(t, f"rec-{hid}.jsonl")]
     argv = {"ws": with_daemon("ws", "pair", "750"),
             "gb10": [sys.executable, FAKE, "--kind", "gb10"],
-            "rtx5090": with_daemon("rtx5090", "5090", "575"),
+            "rtx5090": with_daemon("rtx5090", "5090", "550"),     # one card, budget under its 575 W max
             "gone": [sys.executable, "-c", "import sys; sys.stderr.write('ssh: connect to host gone port 22: No route to host\\n'); sys.exit(255)"]}
     machines = [
         {"id": "ws", "label": "Workstation box", "ssh": None, "port": None,

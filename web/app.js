@@ -281,6 +281,7 @@ class GpuCard {
   stagePower(v, typing) {
     const d = this.d(), [lo, hi] = d.power_range;
     if (!Number.isFinite(v)) return;
+    this.pKeep = false;             // a new value from you always gets a fresh preview
     const w = clamp(Math.round(v), lo, hi);
     this.pending.power = w === d.settings.power_w ? null : w;
     this.pOverride.hidden = true;   // a changed value needs its own fresh confirmation
@@ -321,7 +322,9 @@ class GpuCard {
     // hard-block) leaves pending.power staged, so without this an immediate re-render would
     // clobber the daemon's real error with this recomputed prediction text.
     if (!this.pKeep) {
-      if (over) this.say(this.pMsg, 'warn', `${othersLead} ${total} W: ${total - budget} W over the ${budget} W budget. You can still apply — it will ask you to confirm.`);
+      if (over) this.say(this.pMsg, 'warn', otherCards.length === 0
+        ? `${val} W is ${total - budget} W over this machine’s ${budget} W budget. You can still apply — it will ask you to confirm.`
+        : `${othersLead} ${total} W: ${total - budget} W over the ${budget} W budget. You can still apply — it will ask you to confirm.`);
       else if (staged) this.say(this.pMsg, '', `${applied} W → ${val} W. ${budgetText}${note ? ' ' + note.note : ''}`);
       else this.say(this.pMsg, '', note ? note.note : '');
     }
@@ -359,6 +362,7 @@ class GpuCard {
   fanValue() { return this.pending.fan || this.d().settings.fan; }
   stageFan(patch) {
     if (!this.hv.canEdit()) return;
+    this.fKeep = false;
     const next = Object.assign(structuredClone(this.fanValue()), patch);
     this.pending.fan = same(next, this.d().settings.fan) ? null : next;
     this.syncFan();
@@ -418,6 +422,7 @@ class GpuCard {
     return this.pending.clock || { on: cap != null, mhz: cap != null ? cap : (d.clock_range ? d.clock_range[1] : 0) };
   }
   stageClock(patch) {
+    this.cKeep = false;
     const d = this.d(), next = Object.assign({}, this.clockValue(), patch), cap = d.settings.clock_cap_mhz;
     const asApplied = next.on ? next.mhz === cap : cap == null;
     this.pending.clock = asApplied ? null : next;

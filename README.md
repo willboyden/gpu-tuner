@@ -380,7 +380,7 @@ view (no PCIe riser false alarm, headroom against its lowest threshold), that
 a change on the 5090's tab reaches only that machine's daemon, and the unreachable machine's
 explanation. Nothing is written to the cards.
 
-All three pass as of 2026-10-03 on driver 595.91 (the live one: 40/40).
+All three pass as of 2026-10-04 on driver 595.91 (the live one: 42/42).
 
 Also run against real machines on 2026-10-03: a page on the RTX PRO 6000 workstation managing an
 RTX 5090 box (x86_64, driver 595.91.07, `--no-ui`: power 400-575 W settable, three fans, clock cap

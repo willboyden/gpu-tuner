@@ -83,7 +83,11 @@ class SafetyPower(unittest.TestCase):
         # zero, one, and several "other" cards each get their own wording
         with self.assertRaises(safety.BudgetExceeded) as cm:
             safety.check_power(WS, 900, {WS: (150, 900)}, {}, 750)
-        self.assertIn("900 W is", str(cm.exception))
+        self.assertEqual(str(cm.exception), "900 W is 150 W over this machine's 750 W GPU budget. "
+                                            "Raise the budget, or confirm to exceed it anyway.")
+        with self.assertRaises(safety.BudgetExceeded) as cm:   # an only card that is already over
+            safety.check_power(WS, 900, {WS: (150, 900)}, {WS: 800}, 750)
+        self.assertNotIn("other card", str(cm.exception))
         with self.assertRaises(safety.BudgetExceeded) as cm:
             safety.check_power(WS, 451, self.ranges, self.current, 750)
         self.assertIn("on the other card is", str(cm.exception))
