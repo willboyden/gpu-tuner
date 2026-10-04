@@ -13,74 +13,20 @@ import unittest
 GPU_TUNER = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, GPU_TUNER)
 
-from gpu_tuner import safety  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from gpu_tuner import safety, seed  # noqa: E402
 from gpu_tuner import daemon as daemon_mod  # noqa: E402
 from gpu_tuner.daemon import Daemon, authorised, load_config  # noqa: E402
 from gpu_tuner.nvml import Nvml  # noqa: E402
 
 daemon_mod.log = lambda msg: None      # the daemon narrates every decision; keep test output readable
 
-MAXQ = "GPU-maxq-0000"
-WS = "GPU-ws-0000"
+from fakes import (FakeGB10, FakeLib, FakeOldLib, GB10, MAXQ, WS,  # noqa: E402
+                   meminfo_file)
 
 
-class FakeNVMLError(Exception):
-    pass
-
-
-class FakeLib:
-    """Just enough of pynvml for Nvml(). Two cards mirroring the real pair."""
-    NVMLError = FakeNVMLError
-    NVML_TEMPERATURE_GPU = 0
-    NVML_CLOCK_GRAPHICS, NVML_CLOCK_MEM = 0, 2
-    NVML_TEMPERATURE_THRESHOLD_SHUTDOWN, NVML_TEMPERATURE_THRESHOLD_SLOWDOWN, NVML_TEMPERATURE_THRESHOLD_GPU_MAX = 0, 1, 3
-
-    def __init__(self):
-        self.cards = [
-            {"uuid": MAXQ, "name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition", "fans": 1,
-             "limit": 300000, "con": [250000, 325000], "default": 300000, "temp": 40},
-            {"uuid": WS, "name": "NVIDIA RTX PRO 6000 Blackwell Workstation Edition", "fans": 2,
-             "limit": 450000, "con": [150000, 600000], "default": 600000, "temp": 35},
-        ]
-        self.fan_writes, self.fan_auto, self.refuse_fan, self.refuse_temp = [], [], False, False
-        self.clock_calls = []
-
-    def nvmlInit(self): pass
-    def nvmlShutdown(self): pass
-    def nvmlSystemGetDriverVersion(self): return "595.84"
-    def nvmlDeviceGetCount(self): return len(self.cards)
-    def nvmlDeviceGetHandleByIndex(self, i): return i
-    def nvmlDeviceGetUUID(self, h): return self.cards[h]["uuid"]
-    def nvmlDeviceGetName(self, h): return self.cards[h]["name"]
-    def nvmlDeviceGetPciInfo(self, h): raise FakeNVMLError("n/a")
-    def nvmlDeviceGetVbiosVersion(self, h): return "98.02"
-    def nvmlDeviceGetNumFans(self, h): return self.cards[h]["fans"]
-    def nvmlDeviceGetMinMaxFanSpeed(self, h, lo, hi): lo._obj.value, hi._obj.value = 30, 100   # byref() args
-    def nvmlDeviceGetPowerManagementLimitConstraints(self, h): return self.cards[h]["con"]
-    def nvmlDeviceGetPowerManagementDefaultLimit(self, h): return self.cards[h]["default"]
-    def nvmlDeviceGetPowerManagementLimit(self, h): return self.cards[h]["limit"]
-    def nvmlDeviceGetTemperatureThreshold(self, h, c): return {0: 98, 1: 95, 3: 92}[c]
-    def nvmlDeviceGetSupportedMemoryClocks(self, h): return [14001, 405]
-    def nvmlDeviceGetSupportedGraphicsClocks(self, h, m): return list(range(180, 3091, 15))
-
-    def nvmlDeviceGetTemperature(self, h, _k):
-        if self.refuse_temp:
-            raise FakeNVMLError("Unknown Error")
-        return self.cards[h]["temp"]
-
-    def nvmlDeviceSetPersistenceMode(self, h, v): pass
-    def nvmlDeviceSetPowerManagementLimit(self, h, mw): self.cards[h]["limit"] = mw
-    def nvmlDeviceSetFanSpeed_v2(self, h, f, pct):
-        if self.refuse_fan:
-            raise FakeNVMLError("Insufficient Permissions")
-        self.fan_writes.append((h, f, pct))
-    def nvmlDeviceSetDefaultFanSpeed_v2(self, h, f): self.fan_auto.append((h, f))
-    def nvmlDeviceSetGpuLockedClocks(self, h, lo, hi): self.clock_calls.append((h, lo, hi))
-    def nvmlDeviceResetGpuLockedClocks(self, h): self.clock_calls.append((h, None))
-
-
-def make_daemon(tmp, budget=750, state=None):
-    lib = FakeLib()
+def make_daemon(tmp, budget=750, state=None, lib=None):
+    lib = lib or FakeLib()
     nv = Nvml(lib=lib)
     path = os.path.join(tmp, "state.json")
     if state is not None:
@@ -156,10 +102,19 @@ class SafetyPower(unittest.TestCase):
             with self.assertRaises(safety.SafetyError):
                 safety.check_power(MAXQ, bad, self.ranges, self.current, 750)
 
-    def test_wall_estimate_matches_readme_arithmetic(self):
-        # ops/gpu-power/README.md: 750 W of GPU -> ~1,530 W at the wall; 925 W -> ~1,730 W
-        self.assertAlmostEqual(safety.wall_estimate_w(750), 1530, delta=10)
-        self.assertAlmostEqual(safety.wall_estimate_w(925), 1730, delta=10)
+    def test_no_reported_range_is_none_not_zero(self):
+        # GB10-style: NVML reports nothing. A (0, 0) range once made a daemon try to write 0 W.
+        for args in ((None, None, None), (0, 0, 0), (None, 0, None)):
+            self.assertIsNone(safety.power_range(None, *args), args)
+        p = safety.profile_for("NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition")
+        self.assertIsNone(safety.power_range(p, None, None, None))
+
+    def test_unknown_card_without_a_default_gets_no_range(self):
+        # nothing to anchor "lower only" to, so nothing is settable
+        self.assertIsNone(safety.power_range(None, 100, 500, None))
+
+    def test_no_budget_means_no_budget_check(self):
+        self.assertEqual(safety.check_power(WS, 600, self.ranges, self.current, None), 600)
 
 
 class SafetyFans(unittest.TestCase):
@@ -445,11 +400,176 @@ class Config(unittest.TestCase):
             json.dump({"allowed_uid": 1000, "gpu_budget_w": 800, "interval_s": 3}, f)
         self.assertEqual(load_config(p)["gpu_budget_w"], 800)
         self.assertEqual(load_config(os.path.join(tmp, "missing.json"))["gpu_budget_w"], safety.DEFAULT_GPU_BUDGET_W)
+        with open(p, "w") as f:
+            json.dump({"allowed_uid": 1000, "gpu_budget_w": None}, f)
+        self.assertIsNone(load_config(p)["gpu_budget_w"])      # explicit null: nothing settable here
         for bad in ({"gpu_budget_w": -1}, {"gpu_budget_w": True}, {"allowed_uid": "me"}, {"interval_s": 0.1}, []):
             with open(p, "w") as f:
                 json.dump(bad, f)
             with self.assertRaises(SystemExit):
                 load_config(p)
+
+
+class Gb10(unittest.TestCase):
+    """A machine whose only GPU reports no power limit, no fans, no memory info, no clock list."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def test_startup_writes_nothing_and_keeps_no_banner_warning(self):
+        lib = FakeGB10()
+        d, _ = make_daemon(self.tmp, budget=None, lib=lib)
+        self.assertEqual(d.warnings, [])                      # persistence NOT_SUPPORTED is logged, not kept
+        self.assertIsNone(d.ranges[GB10])
+        self.assertIsNone(d.settings[GB10]["power_w"])
+        self.assertEqual(lib.power_writes, [])                # never a 0 W write
+        st = d.status()
+        self.assertFalse(st["power_settable"])
+        self.assertIsNone(st["budget_w"])
+        self.assertIsNone(st["gpus"][0]["power_range"])
+        self.assertIsNone(st["gpus"][0]["clock_range"])
+
+    def test_power_and_budget_requests_are_refused(self):
+        d, lib = make_daemon(self.tmp, budget=None, lib=FakeGB10())
+        r = d.handle({"op": "set_power", "uuid": GB10, "watts": 100})
+        self.assertFalse(r["ok"])
+        self.assertIn("no settable power range", r["error"])
+        r = d.handle({"op": "set_budget", "watts": 200})
+        self.assertFalse(r["ok"])
+        self.assertIn("nothing for a budget to limit", r["error"])
+        r = d.handle({"op": "set_fan", "uuid": GB10, "mode": "manual", "manual_pct": 80})
+        self.assertFalse(r["ok"])
+        self.assertEqual(lib.power_writes, [])
+
+    def test_tick_drives_no_fans(self):
+        d, lib = make_daemon(self.tmp, budget=None, lib=FakeGB10())
+        d.tick(1000.0)
+        self.assertEqual((lib.fan_writes, lib.fan_auto), ([], []))
+
+    def test_baseline_on_a_card_with_nothing_settable_is_a_no_op(self):
+        d, lib = make_daemon(self.tmp, budget=None, lib=FakeGB10())
+        r = d.handle({"op": "baseline", "uuid": GB10})
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(lib.power_writes, [])
+
+    def test_unified_memory_reports_system_ram(self):
+        nv = Nvml(lib=FakeGB10(), meminfo=meminfo_file(self.tmp, 128 << 20, 96 << 20))
+        g = nv.gpus[0]
+        self.assertEqual(g.mem_kind, "unified")
+        self.assertIsNone(g.power_max_w)
+        self.assertEqual(g.static()["power_default_w"], None)
+        s = nv.sample(g)
+        self.assertEqual((s["vram_total_mib"], s["vram_used_mib"], s["mem_kind"]), (128 << 10, 32 << 10, "unified"))
+        self.assertIsNone(s["power_limit_w"])
+        self.assertEqual(s["power_w"], 31.0)
+        self.assertEqual(s["fans"], [])
+
+    def test_discrete_card_keeps_vram(self):
+        nv = Nvml(lib=FakeLib())
+        self.assertEqual(nv.gpus[0].mem_kind, "dedicated")
+        self.assertEqual(nv.sample(nv.gpus[0])["vram_total_mib"], 96 << 10)
+
+
+class LowSlowdownCard(FakeLib):
+    """A fan-cooled card that slows down at 86 C (as GB10 reports): its "100% by" is 76 C, below the
+    lab curve's last point (80 C), so the lab curve itself is not a valid curve for it."""
+
+    def nvmlDeviceGetTemperatureThreshold(self, h, c): return {0: 90, 1: 86, 3: 99}[c]
+
+
+class DefaultCurves(unittest.TestCase):
+    def test_default_curve_always_passes_the_cards_own_rule(self):
+        for full_by in range(30, 101):
+            curve = [list(p) for p in safety.default_curve(full_by)]
+            self.assertEqual(safety.validate_curve(curve, full_by=full_by), curve, full_by)
+            self.assertEqual(curve[-1], [min(full_by, 80) if full_by < 80 else 80, 100])
+        self.assertEqual(safety.default_curve(85), safety.LAB_CURVE)
+
+    def test_low_slowdown_card_starts_clean_and_resets_to_baseline(self):
+        tmp = tempfile.mkdtemp()
+        d, lib = make_daemon(tmp, lib=LowSlowdownCard())
+        self.assertEqual(d.warnings, [])
+        self.assertEqual(d.settings[WS]["fan"]["curve"][-1], [76, 100])
+        r = d.handle({"op": "baseline", "uuid": WS})
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(d.settings[WS]["fan"]["curve"][-1], [76, 100])
+        d2 = Daemon(Nvml(lib=LowSlowdownCard()), {"gpu_budget_w": 750, "allowed_uid": 1000, "interval_s": 2.0},
+                    d.state_path)
+        d2.load_state()                                       # and its saved state reloads without warnings
+        self.assertEqual(d2.warnings, [])
+
+
+class OldPynvml(unittest.TestCase):
+    """A distro pynvml without some bindings must degrade to "unsupported", never AttributeError."""
+
+    def test_loads_and_samples(self):
+        nv = Nvml(lib=FakeOldLib())
+        s = nv.sample(nv.gpus[1])
+        self.assertEqual(s["fans"], [None, None])
+        self.assertEqual(s["reasons"], [])
+
+    def test_missing_setter_is_an_nvml_error_and_the_fan_loop_survives_it(self):
+        tmp = tempfile.mkdtemp()
+        d, lib = make_daemon(tmp, lib=FakeOldLib())
+        with self.assertRaises(d.nv.Error):
+            d.nv.set_fan_pct(d.nv.gpus[0], 60)
+        d.tick(1000.0)                                        # must not raise
+        self.assertIn("fan write refused", d.rt[MAXQ]["fault"])
+
+
+class Seed(unittest.TestCase):
+    def test_parse_limit(self):
+        for text, want in (("450.00", 450), (" 300 ", 300), ("[N/A]", None), ("[Not Supported]", None),
+                           ("", None), ("0", None), ("-5", None), ("nan", None), ("inf", None)):
+            self.assertEqual(seed.parse_limit(text), want, text)
+
+    def test_mixed_machine(self):
+        doc, budget = seed.build([["GPU-a", "325.00"], ["GPU-b", "[N/A]"], ["GPU-c", " 450 "]])
+        self.assertEqual(budget, 775)
+        self.assertNotIn("power_w", doc["gpus"]["GPU-b"])     # adopt live, or leave power alone
+        self.assertEqual(doc["gpus"]["GPU-a"]["power_w"], 325)
+
+    def test_nothing_settable_means_no_budget(self):
+        doc, budget = seed.build([["GPU-gb10", "[N/A]"]])
+        self.assertIsNone(budget)
+        self.assertEqual(list(doc["gpus"]), ["GPU-gb10"])
+
+    def test_fans_start_on_the_driver_curve_unless_asked(self):
+        doc, _ = seed.build([["GPU-a", "300"]])
+        self.assertEqual(doc["gpus"]["GPU-a"]["fan"]["mode"], "auto")
+        doc, _ = seed.build([["GPU-a", "300"]], fan_mode="curve")
+        self.assertEqual(doc["gpus"]["GPU-a"]["fan"]["mode"], "curve")
+        with self.assertRaises(ValueError):
+            seed.build([["GPU-a", "300"]], fan_mode="max")
+
+    def test_blank_rows_skipped_and_cli_round_trip(self):
+        tmp = tempfile.mkdtemp()
+        csv_in, out, bud = (os.path.join(tmp, n) for n in ("in.csv", "state.json", "budget"))
+        with open(csv_in, "w") as f:
+            f.write(f"{MAXQ}, 300.00\n\n{WS}, 450.00\n")
+        self.assertEqual(seed.main([csv_in, out, bud, "--fan-mode", "curve"]), 0)
+        with open(bud) as f:
+            self.assertEqual(f.read(), "750")
+        with open(out) as f:
+            doc = json.load(f)
+        self.assertEqual(sorted(doc["gpus"]), sorted([MAXQ, WS]))
+        # and the daemon accepts what the seed wrote, without warnings
+        d = Daemon(Nvml(lib=FakeLib()), {"gpu_budget_w": 750, "allowed_uid": 1000, "interval_s": 2.0}, out)
+        d.load_state()
+        self.assertEqual(d.warnings, [])
+        self.assertEqual((d.settings[MAXQ]["power_w"], d.settings[WS]["fan"]["mode"]), (300, "curve"))
+
+    def test_only_na_rows_write_a_null_budget(self):
+        tmp = tempfile.mkdtemp()
+        csv_in, out, bud = (os.path.join(tmp, n) for n in ("in.csv", "state.json", "budget"))
+        with open(csv_in, "w") as f:
+            f.write(f"{GB10}, [N/A]\n")
+        seed.main([csv_in, out, bud])
+        with open(bud) as f:
+            self.assertEqual(f.read(), "null")
+        d = Daemon(Nvml(lib=FakeGB10()), {"gpu_budget_w": None, "allowed_uid": 1000, "interval_s": 2.0}, out)
+        d.load_state()
+        self.assertEqual((d.warnings, d.settings[GB10]["power_w"]), ([], None))
 
 
 class SocketRace(unittest.TestCase):

@@ -7,9 +7,13 @@ Three layers, innermost first:
   1. The card's own range as NVML reports it live (never hardcoded as the authority).
   2. The known-good profile for that exact product, INTERSECTED with (1). A card we have no
      profile for may be lowered but never raised above its factory default.
-  3. A combined GPU budget across all cards. The cards alone would allow 325 + 600 = 925 W,
-     which ops/gpu-power/README.md puts at ~1,730 W at the wall — over a 15 A circuit's
-     continuous rating. The per-card maximum is NOT the safe maximum for this machine.
+  3. A combined GPU budget across all cards in ONE machine (they share its PSU and wall circuit).
+     The per-card maximum is not the safe maximum for a machine: on the workstation this was
+     built on, 325 + 600 = 925 W of caps is ~1,730 W at the wall, over a 15 A circuit's
+     continuous rating. Each machine has its own budget; there is no fleet-wide one.
+
+A card whose power limit NVML won't report (GB10 and other SoC parts, where firmware owns power)
+has no settable range at all, not a 0-0 W one.
 """
 from __future__ import annotations
 
@@ -63,6 +67,22 @@ def safety_floor_for(slowdown_c=None):
 # The curve ops/gpu-fan-curve.py has run since 2026-09-07 (-11 C under load on both cards).
 LAB_CURVE = ((30, 30), (45, 45), (55, 60), (65, 75), (72, 88), (80, 100))
 
+def default_curve(full_by=FAN_FULL_BY_C):
+    """The lab curve, or — for a card whose own "100% by" temperature is below the curve's last
+    point (a GB10-class slowdown of 86 C gives 76 C) — the same shape with its temperatures scaled
+    down to end exactly there, so a card's default always passes its own validate_curve()."""
+    last = LAB_CURVE[-1][0]
+    if full_by >= last:
+        return LAB_CURVE
+    out, prev = [], CURVE_TEMP_MIN_C - 1
+    for t, pct in LAB_CURVE:
+        t2 = max(prev + 1, CURVE_TEMP_MIN_C, int(t * full_by / last))
+        out.append((t2, pct))
+        prev = t2
+    out[-1] = (full_by, 100)
+    return tuple(out) if out[-2][0] < full_by else ((CURVE_TEMP_MIN_C, out[0][1]), (full_by, 100))
+
+
 CURVE_PRESETS = {
     "lab": {"label": "Lab (cooling-first)", "curve": LAB_CURVE,
             "note": "The curve this lab has run since 2026-09-07. 100% at 80 C."},
@@ -85,13 +105,11 @@ HYSTERESIS_C = 2          # ramp up at once; ramp down only after the card has c
 CLOCK_CAP_MIN_MHZ = 1000
 
 # ── power ───────────────────────────────────────────────────────────────────────────────────
-DEFAULT_GPU_BUDGET_W = 750    # 300 + 450: the ceiling ops/gpu-power/README.md chose on purpose
-# Wall-power arithmetic from that README: worst case ~1,555 W DC at 925 W of GPU (so ~630 W for
-# the 9975WX, NVMe, ConnectX-7, DDR5 and board), ~1,730 W at the wall (so ~90% PSU efficiency).
-# An ESTIMATE, labelled as one wherever it is shown.
-NON_GPU_DC_W = 630
-PSU_EFFICIENCY = 0.90
-CIRCUIT_CONTINUOUS_W = {"15 A": 1440, "20 A": 1920}   # 120 V x amps x 80% continuous rating
+# Last-resort fallback only, for a config.json that is missing entirely: install.sh seeds the real
+# budget from the caps already in force on THIS machine's cards. (750 W was the 2x RTX PRO 6000
+# workstation's own 300 + 450 W ceiling.) The wall-power estimate that used to live here is a
+# per-machine display setting now — see hosts.py, `wall` in hosts.json.
+DEFAULT_GPU_BUDGET_W = 750
 
 PROFILES = (
     {
@@ -148,10 +166,15 @@ def _as_int(value, what: str) -> int:
     return value
 
 
-def power_range(profile, nvml_min_w: int, nvml_max_w: int, nvml_default_w: int):
-    """Settable (lo, hi) watts: the live NVML range, narrowed by the profile. None if empty."""
+def power_range(profile, nvml_min_w, nvml_max_w, nvml_default_w):
+    """Settable (lo, hi) watts: the live NVML range, narrowed by the profile. None if empty, or
+    if NVML reports no range at all (None/0) — never a 0-0 W range a daemon would try to write."""
+    if not nvml_max_w or nvml_max_w <= 0 or nvml_min_w is None:
+        return None
     lo, hi = nvml_min_w, nvml_max_w
     if profile is None:
+        if not nvml_default_w or nvml_default_w <= 0:
+            return None                   # unknown card AND unknown default: nothing to anchor "lower only" to
         hi = min(hi, nvml_default_w)      # unknown card: lowering only
     else:
         lo, hi = max(lo, profile["power_min_w"]), min(hi, profile["power_max_w"])
@@ -167,7 +190,7 @@ def check_power(uuid: str, watts, ranges: dict, current: dict, budget_w: int,
     over-budget state could never be walked back down. A card's own NVML range is never
     overridable (that is the real hardware ceiling); the combined budget is a soft, configured
     limit and raises BudgetExceeded instead of SafetyError so a caller can offer
-    confirm_override=True to proceed anyway.
+    confirm_override=True to proceed anyway. budget_w None means this machine has no budget.
     """
     watts = _as_int(watts, "power limit")
     rng = ranges.get(uuid)
@@ -177,7 +200,7 @@ def check_power(uuid: str, watts, ranges: dict, current: dict, budget_w: int,
     if not lo <= watts <= hi:
         raise SafetyError(f"power limit must be {lo}-{hi} W for this card")
     total = sum(w for u, w in current.items() if u != uuid) + watts
-    if total > budget_w and watts > current.get(uuid, 0) and not confirm_override:
+    if budget_w is not None and total > budget_w and watts > current.get(uuid, 0) and not confirm_override:
         others_w = total - watts
         other_uuids = [u for u in current if u != uuid]
         if not other_uuids:
@@ -191,10 +214,6 @@ def check_power(uuid: str, watts, ranges: dict, current: dict, budget_w: int,
             f"first, raise the budget, or confirm to exceed it anyway.",
             total_w=total, budget_w=budget_w, others_w=others_w)
     return watts
-
-
-def wall_estimate_w(gpu_caps_total_w: int) -> int:
-    return int(round((NON_GPU_DC_W + gpu_caps_total_w) / PSU_EFFICIENCY))
 
 
 # ── fan curves ──────────────────────────────────────────────────────────────────────────────

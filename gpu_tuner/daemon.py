@@ -78,6 +78,8 @@ def load_config(path):
     if not isinstance(raw, dict):
         sys.exit(f"gpu-tunerd: {path} must be a JSON object")
     uid, budget, interval = raw.get("allowed_uid"), raw.get("gpu_budget_w"), raw.get("interval_s")
+    if "gpu_budget_w" in raw and budget is None:
+        cfg["gpu_budget_w"] = None    # explicit null: no card here has a settable cap (e.g. GB10)
     if uid is not None:
         if isinstance(uid, bool) or not isinstance(uid, int) or uid < 0:
             sys.exit(f"gpu-tunerd: allowed_uid in {path} must be a uid")
@@ -149,8 +151,9 @@ class Daemon:
         """One card's settings from the state file, each field re-validated. The state file is
         root-owned, but a stale one (budget lowered, card swapped) must not bypass the checks."""
         rng = self.ranges[g.uuid]
+        default = [list(p) for p in safety.default_curve(self._full_by(g))]
         s = {"power_w": None, "clock_cap_mhz": None,
-             "fan": {"mode": "curve", "curve": [list(p) for p in safety.LAB_CURVE], "manual_pct": 60}}
+             "fan": {"mode": "curve", "curve": default, "manual_pct": 60}}
         saved = saved if isinstance(saved, dict) else {}
         if rng is not None:
             live = self.nv.power_limit_w(g)
@@ -164,6 +167,8 @@ class Daemon:
                 s["power_w"] = self.baseline_power(g)
                 self.warn(f"{g.name}: saved power limit rejected ({e}); using {s['power_w']} W")
         fan = saved.get("fan") if isinstance(saved.get("fan"), dict) else {}
+        if not g.nfans:
+            fan = {}                # nothing to drive, so nothing to validate or warn about
         try:
             if fan.get("mode") in ("curve", "manual", "auto"):
                 s["fan"]["mode"] = fan["mode"]
@@ -173,8 +178,8 @@ class Daemon:
             if "manual_pct" in fan:
                 s["fan"]["manual_pct"] = safety.validate_manual(fan["manual_pct"], g.fan_min)
         except safety.SafetyError as e:
-            s["fan"] = {"mode": "curve", "curve": [list(p) for p in safety.LAB_CURVE], "manual_pct": 60}
-            self.warn(f"{g.name}: saved fan settings rejected ({e}); using the lab curve")
+            s["fan"] = {"mode": "curve", "curve": default, "manual_pct": 60}
+            self.warn(f"{g.name}: saved fan settings rejected ({e}); using this card's default curve")
         try:
             s["clock_cap_mhz"] = safety.validate_clock_cap(saved.get("clock_cap_mhz"), g.clocks)
         except safety.SafetyError as e:
@@ -195,7 +200,7 @@ class Daemon:
         for g in self.nv.gpus:
             self.settings[g.uuid] = self._load_one(g, saved.get(g.uuid))
         total = sum(s["power_w"] or 0 for s in self.settings.values())
-        if total > self.budget:
+        if self.budget is not None and total > self.budget:
             for g in self.nv.gpus:
                 if self.ranges[g.uuid] is not None:
                     self.settings[g.uuid]["power_w"] = self.baseline_power(g)
@@ -232,7 +237,10 @@ class Daemon:
             try:
                 self.nv.set_persistence(g)   # without it the limits drop when the last client exits
             except self.nv.Error as e:
-                self.warn(f"{g.name}: could not enable persistence mode: {e}")
+                if self.nv.not_supported(e):  # e.g. GB10: a fact about the card, not a fault to keep showing
+                    log(f"{g.name}: persistence mode not supported by this GPU")
+                else:
+                    self.warn(f"{g.name}: could not enable persistence mode: {e}")
         # Lower first, raise second: the combined cap never overshoots max(before, after).
         todo = [(g, self.settings[g.uuid]["power_w"]) for g in self.nv.gpus
                 if self.settings[g.uuid]["power_w"] is not None]
@@ -350,14 +358,11 @@ class Daemon:
                 "full_by_c": full_by, "floor": [list(p) for p in floor],
             })
         warnings = list(self.warnings[-10:])
-        if used > self.budget:
+        if self.budget is not None and used > self.budget:
             warnings.append(f"combined power is {used} W, over the {self.budget} W budget")
         return {"ok": True, "version": __version__, "dry_run": self.nv.dry_run,
                 "budget_w": self.budget, "budget_used_w": used,
-                "wall_estimate_w": safety.wall_estimate_w(used),
-                "circuits": safety.CIRCUIT_CONTINUOUS_W,
-                "wall_model": {"non_gpu_dc_w": safety.NON_GPU_DC_W,
-                               "psu_efficiency": safety.PSU_EFFICIENCY},
+                "power_settable": any(r is not None for r in self.ranges.values()),
                 "curve_temp_min_c": safety.CURVE_TEMP_MIN_C,
                 "curve_max_points": safety.CURVE_MAX_POINTS,
                 "curve_presets": {k: {"label": v["label"], "note": v["note"],
@@ -370,7 +375,10 @@ class Daemon:
         if watts <= 0:
             raise safety.SafetyError("the GPU budget must be a positive number of watts")
         hw_max = sum(rng[1] for rng in self.ranges.values() if rng is not None)
-        if hw_max and watts > hw_max:
+        if not hw_max:
+            raise safety.SafetyError("no card on this machine has a settable power limit, so there "
+                                     "is nothing for a budget to limit")
+        if watts > hw_max:
             raise safety.SafetyError(
                 f"{watts} W is above {hw_max} W, the sum of every card's own hardware maximum — "
                 f"a budget above that can never actually bind on anything")
@@ -437,7 +445,8 @@ class Daemon:
             else:
                 # Always-safe steps first, power last: power is the one the budget can refuse.
                 if g.nfans:
-                    self._set_fan(g, {"mode": "curve", "curve": [list(p) for p in safety.LAB_CURVE]})
+                    self._set_fan(g, {"mode": "curve",
+                                      "curve": [list(p) for p in safety.default_curve(self._full_by(g))]})
                     done.append("fan curve")
                 if self.settings[g.uuid]["clock_cap_mhz"] is not None:
                     self._set_clock_cap(g, None)
@@ -567,7 +576,7 @@ def main(argv=None):
     nv = Nvml(dry_run=args.dry_run)
     d = Daemon(nv, cfg, args.state, args.config)
     log(f"gpu-tunerd {__version__} driver {nv.driver}{' DRY-RUN' if args.dry_run else ''} "
-        f"budget {d.budget} W interval {cfg['interval_s']}s")
+        f"budget {'none' if d.budget is None else str(d.budget) + ' W'} interval {cfg['interval_s']}s")
     for g in nv.gpus:
         log(f"  gpu{g.index} {g.name} {g.uuid} fans={g.nfans} settable={d.ranges[g.uuid]} W")
     srv = None

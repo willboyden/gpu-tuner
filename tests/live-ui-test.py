@@ -15,6 +15,10 @@ What it proves:
   budget  the budget editor persists a new value and the page reflects it live
   keys    a curve point moved with the arrow keys keeps focus across a poll tick
   layout  no horizontal overflow at phone width with the table open
+  fleet   (tests/fake_hub.py: the real page server over four fake machines) the fleet strip and
+          tabs list every machine; a GB10 shows monitor-only with unified memory and no power or
+          fan controls; a change on the 5090's tab reaches ONLY that machine's daemon; an
+          unreachable machine says so; still no overflow at phone width
 Uses Firefox's Marionette protocol directly (no geckodriver, no selenium).
 """
 import base64
@@ -31,6 +35,7 @@ import urllib.request
 
 TUNER = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PORT = 8766                       # not the real UI's 8765, so this can run beside it
+FLEET_PORT = 8767
 FAILS = []
 
 
@@ -143,14 +148,16 @@ def main():
     cfg = os.path.join(tmp, "config.json")
     with open(cfg, "w") as f:
         json.dump({"allowed_uid": os.getuid(), "gpu_budget_w": 750, "interval_s": 2}, f)
-    logs = open(os.path.join(tmp, "daemon.log"), "w"), open(os.path.join(tmp, "ui.log"), "w")
+    logs = (open(os.path.join(tmp, "daemon.log"), "w"), open(os.path.join(tmp, "ui.log"), "w"),
+            open(os.path.join(tmp, "fleet.log"), "w"))
     procs, browser = [], None
     try:
         procs.append(subprocess.Popen([os.path.join(TUNER, "gpu-tunerd"), "--dry-run", "--config", cfg,
                                        "--state", os.path.join(tmp, "state.json"), "--socket", sock],
                                       stdout=logs[0], stderr=subprocess.STDOUT))
         wait_for(lambda: os.path.exists(sock), 15, "daemon socket")
-        procs.append(subprocess.Popen([os.path.join(TUNER, "gpu-tuner"), "serve", "--port", str(PORT), "--socket", sock],
+        procs.append(subprocess.Popen([os.path.join(TUNER, "gpu-tuner"), "serve", "--port", str(PORT), "--socket", sock,
+                                       "--hosts", os.path.join(tmp, "no-hosts.json")],
                                       stdout=logs[1], stderr=subprocess.STDOUT))
         base = f"http://127.0.0.1:{PORT}"
         wait_for(lambda: http(base + "/")[0] == 401, 15, "UI server")
@@ -207,24 +214,24 @@ def main():
           const card = document.querySelectorAll('.gpu')[1];
           [...card.querySelectorAll('button')].find(x => x.textContent.startsWith('Apply anyway')).click();""")
         time.sleep(2)
-        r = browser.js("const c = document.querySelectorAll('.gpu')[1]; return [c.querySelector('.msg').textContent, document.getElementById('b-used').textContent]")
+        r = browser.js("const c = document.querySelectorAll('.gpu')[1]; return [c.querySelector('.msg').textContent, document.querySelector('.hostview:not([hidden]) .b-used').textContent]")
         check("confirmed" in r[0] and "600 W in force" in r[0] and r[1] == "900", f"confirmed override applied 600 W; hero shows 900 ({r})")
         browser.js("""
           const card = document.querySelectorAll('.gpu')[1];
           const num = card.querySelector('input[type=number]'); num.value = 425; num.dispatchEvent(new Event('input', {bubbles:true}));
           [...card.querySelectorAll('button')].find(x => x.textContent === 'Apply power limit').click();""")
         time.sleep(2)
-        r = browser.js("const c = document.querySelectorAll('.gpu')[1]; return [c.querySelector('.msg').textContent, document.getElementById('b-used').textContent]")
+        r = browser.js("const c = document.querySelectorAll('.gpu')[1]; return [c.querySelector('.msg').textContent, document.querySelector('.hostview:not([hidden]) .b-used').textContent]")
         check("425 W in force" in r[0] and r[1] == "725", f"lowering back down applies with no confirm needed; hero shows 725 ({r})")
 
         print("budget editor")
-        before = browser.js("return document.getElementById('b-input').value")
+        before = browser.js("return document.querySelector('.hostview:not([hidden]) .b-input').value")
         check(before == "750", f"budget input starts at 750 ({before})")
         browser.js("""
-          const input = document.getElementById('b-input'); input.value = 900;
-          document.getElementById('b-apply').click();""")
+          const input = document.querySelector('.hostview:not([hidden]) .b-input'); input.value = 900;
+          document.querySelector('.hostview:not([hidden]) .b-apply').click();""")
         time.sleep(1)
-        r = browser.js("return [document.getElementById('b-msg').textContent, document.getElementById('b-sub').textContent]")
+        r = browser.js("return [document.querySelector('.hostview:not([hidden]) .b-msg').textContent, document.querySelector('.hostview:not([hidden]) .b-sub').textContent]")
         check("900" in r[0] and "900 W combined GPU budget" in r[1], f"budget editor persists a new value live ({r})")
         browser.js("""
           const card = document.querySelectorAll('.gpu')[0];
@@ -266,6 +273,68 @@ def main():
         time.sleep(1.5)
         r = browser.js("return [document.documentElement.scrollWidth, document.documentElement.clientWidth]")
         check(r[0] <= r[1], f"no horizontal overflow at phone width with the table open ({r})")
+
+        print("fleet (fake machines)")
+        procs.append(subprocess.Popen([sys.executable, os.path.join(TUNER, "tests", "fake_hub.py"),
+                                       "--port", str(FLEET_PORT), "--tmp", tmp],
+                                      stdout=logs[2], stderr=subprocess.STDOUT))
+        fbase = f"http://127.0.0.1:{FLEET_PORT}"
+        wait_for(lambda: http(fbase + "/")[0] == 401, 15, "fake hub")
+        browser.resize(1400, 1000)
+        browser.go(subprocess.check_output([os.path.join(TUNER, "gpu-tuner"), "open", "--port", str(FLEET_PORT), "--print-url"], text=True).strip())
+        time.sleep(5)
+        browser.js("window.__errs=[]; addEventListener('error', e => __errs.push(e.message));"
+                   "addEventListener('unhandledrejection', e => __errs.push(String(e.reason)))")
+        r = browser.js("return [document.querySelectorAll('#fleet-table tbody tr').length, document.querySelectorAll('#tabs [role=tab]').length, document.getElementById('conn').textContent, document.getElementById('fleet').hidden]")
+        check(r == [5, 4, "Live · 3 of 4 machines", False], f"fleet strip: 5 GPU rows on 4 machines, 3 live ({r})")
+        r = browser.js("return [...document.querySelectorAll('#fleet-table tbody tr')].map(t => t.children[1].textContent)")
+        check(r[-1].startswith("Unreachable") and r[2] == "Live · monitor-only", f"link states read in words ({r})")
+        browser.js("document.getElementById('tab-gb10').click()")
+        time.sleep(2)
+        r = browser.js("""
+          const v = document.querySelector('.hostview:not([hidden])');
+          return [location.hash, v.dataset.host, v.querySelector('.gpu h2').textContent,
+                  [...v.querySelectorAll('.tile .label')].map(x => x.textContent)[4],
+                  [...v.querySelectorAll('fieldset')].filter(f => !f.hidden).length,
+                  v.querySelector('.unsupported').textContent, v.querySelector('.banner').textContent,
+                  v.querySelector('.budget').hidden, document.getElementById('hist-h').textContent,
+                  document.querySelectorAll('.chart:not([hidden])').length];""")
+        check(r[:5] == ["#host=gb10", "gb10", "GB10", "System memory (shared)", 0],
+              f"GB10 tab: unified memory, no power/fan/clock controls ({r[:5]})")
+        check("power limit, fan control, clock cap" in r[5] and "Monitor-only, and that is all Spark 1 needs" in r[6] and r[7] is True
+              and r[8] == "History · Spark 1", f"GB10 says why, is monitor-only, has no budget panel ({r[5:9]})")
+        check(r[9] == 4, f"no empty fan chart for a fanless machine ({r[9]} charts shown)")
+        r = browser.js("""
+          const v = document.querySelector('.hostview:not([hidden])');
+          return [v.querySelector('.gpu header .sub').textContent, v.querySelector('.tile .sub').textContent];""")
+        check("PCIe" not in r[0] and "under slowdown (86 °C)" in r[1],
+              f"GB10: no bogus PCIe riser warning, headroom against its lowest threshold ({r})")
+        browser.js("document.getElementById('tab-rtx5090').click()")
+        time.sleep(2)
+        r = browser.js("""
+          const v = document.querySelector('.hostview:not([hidden])'), card = v.querySelector('.gpu');
+          const num = card.querySelector('input[type=number]'); num.value = 550; num.dispatchEvent(new Event('input', {bubbles:true}));
+          [...card.querySelectorAll('button')].find(x => x.textContent === 'Apply power limit').click();
+          return card.querySelector('h2').textContent;""")
+        time.sleep(2.5)
+        msg = browser.js("return document.querySelector('.hostview:not([hidden]) .gpu .msg').textContent")
+        check(r == "GeForce RTX 5090" and "550 W in force" in msg, f"a 5090 change applies on its own machine ({r}, {msg})")
+        n = browser.js("return document.querySelectorAll('.chart:not([hidden])').length")
+        check(n == 5, f"the fan chart comes back on a machine with fans ({n} charts shown)")
+        recs = {}
+        for hid in ("ws", "rtx5090"):
+            path = os.path.join(tmp, f"rec-{hid}.jsonl")
+            recs[hid] = open(path).read().count("set_power") if os.path.exists(path) else 0
+        check(recs == {"ws": 0, "rtx5090": 1}, f"...and reached ONLY the 5090's daemon ({recs})")
+        browser.js("document.getElementById('tab-gone').click()")
+        time.sleep(1.5)
+        r = browser.js("return document.querySelector('.hostview:not([hidden]) .banner').textContent")
+        check("Gone box is unreachable" in r and "No route to host" in r, f"an unreachable machine says why ({r[:120]})")
+        browser.resize(420, 900)
+        time.sleep(1.5)
+        r = browser.js("return [document.documentElement.scrollWidth, document.documentElement.clientWidth]")
+        check(r[0] <= r[1], f"no horizontal overflow at phone width with four machines ({r})")
+        check(browser.js("return __errs") == [], "no JS errors on the fleet page")
 
         with open(os.path.join(tmp, "daemon.log")) as f:
             log = f.read()

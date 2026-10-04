@@ -21,33 +21,14 @@
 <main>
   <div id="banner" class="banner" hidden></div>
 
-  <section id="budget" class="panel" aria-labelledby="budget-h">
-    <h2 id="budget-h">Power budget</h2>
-    <div class="budget-row">
-      <div class="budget-main">
-        <div class="hero"><span id="b-used">–</span><span class="hero-unit"> W capped</span></div>
-        <div id="b-sub" class="sub"></div>
-        <div id="b-bar" class="stack" role="img" aria-label="Combined power caps against the budget"></div>
-        <div id="b-legend" class="legend"></div>
-        <div id="b-edit" class="row">
-          <input id="b-input" type="number" step="1" min="1" aria-label="Combined GPU power budget in watts">
-          <span>W</span>
-          <button id="b-apply" class="ghost small" type="button">Set budget</button>
-          <span id="b-msg" class="msg"></span>
-        </div>
-      </div>
-      <dl class="facts">
-        <div><dt>Drawing now</dt><dd id="b-draw">–</dd></div>
-        <div><dt>Worst case at the wall, at these caps</dt><dd id="b-wall">–</dd></div>
-        <div><dt>Against a wall circuit</dt><dd id="b-circuit">–</dd></div>
-      </dl>
-    </div>
-    <p class="note">The wall figure is an estimate from <code>ops/gpu-power/README.md</code>: about 630&nbsp;W for the
-      CPU, drives, NIC and board on top of the GPU caps, at roughly 90% supply efficiency. Each card's own maximum is
-      not this machine's safe maximum, which is why the two caps share one budget.</p>
+  <section id="fleet" class="panel" aria-labelledby="fleet-h" hidden>
+    <h2 id="fleet-h">Machines</h2>
+    <div class="table-wrap fleet-wrap"><table id="fleet-table"></table></div>
   </section>
 
-  <section id="gpus" class="gpu-grid" aria-label="Cards"></section>
+  <nav id="tabs" class="tabs" role="tablist" aria-label="Machines" hidden></nav>
+
+  <div id="hosts"></div>
 
   <section id="history" aria-labelledby="hist-h">
     <div class="filters">
@@ -81,8 +62,11 @@
         <dd>Held on by the daemon (its actual on/off state is shown read-only). With it off, the driver drops the
           power caps whenever the last CUDA client exits.</dd></div>
       <div><dt>Chassis fans</dt>
-        <dd>On this lab's own board they're BMC-owned and the motherboard's PWM registers do nothing; whether
-          that's true elsewhere depends on the board, so this stays out of scope everywhere.</dd></div>
+        <dd>On many workstation boards they're BMC-owned and the motherboard's PWM registers do nothing; whether
+          that's true depends on the board, so this stays out of scope everywhere.</dd></div>
+      <div><dt>Power on system-on-chip GPUs</dt>
+        <dd>On parts like the GB10 (DGX Spark) NVML reports no power limit and no fans: firmware manages power
+          and cooling for the whole chip, so this page shows their readings and offers only what NVML exposes.</dd></div>
     </dl>
   </section>
 </main>

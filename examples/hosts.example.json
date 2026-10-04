@@ -1,0 +1,8 @@
+{
+  "hosts": [
+    {"id": "local", "label": "Workstation",
+     "wall": {"non_gpu_dc_w": 630, "psu_efficiency": 0.9, "circuits": {"15 A": 1440, "20 A": 1920}}},
+    {"id": "gpu-box-2", "label": "GPU box 2", "ssh": "gpu-box-2"},
+    {"id": "edge-1", "label": "Edge 1", "ssh": "me@10.0.0.21", "port": 2222}
+  ]
+}

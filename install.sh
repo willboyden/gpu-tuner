@@ -1,16 +1,26 @@
 #!/usr/bin/env bash
 # install.sh — install gpu-tuner (root daemon + your user's web UI), taking over from
-# gpu-fan-curve.service and gpu-power-limit.service. Rolls back to those two if anything fails.
+# gpu-fan-curve.service and gpu-power-limit.service if they exist. Rolls back to them if anything fails.
 #
-#   ops/gpu-tuner/install.sh              install / upgrade (asks for sudo)
-#   ops/gpu-tuner/install.sh --dry-run    print every privileged command instead of running it
-#   ops/gpu-tuner/install.sh --uninstall  remove gpu-tuner and hand control back to the old units
+#   ./install.sh              install / upgrade: daemon + web UI (asks for sudo)
+#   ./install.sh --no-ui      daemon only — a headless machine another machine's page will manage
+#   ./install.sh --node       code only, no services: a machine that is only monitored remotely
+#                             (or whose GPUs have nothing NVML lets you set, e.g. GB10)
+#   ./install.sh --dry-run    print every privileged command instead of running it (combines)
+#   ./install.sh --uninstall  remove gpu-tuner and hand control back to the old units
+#
+# Every mode installs the code to /usr/local/lib/gpu-tuner, so a remote page can always reach this
+# machine at the same fixed, root-owned path: /usr/local/lib/gpu-tuner/gpu-tuner node --stdio.
 #
 # Run as YOUR user, not with sudo: the UI unit and the launcher are installed for you, and the
-# daemon's config records your uid as the one allowed to talk to it.
+# daemon's config records your uid as the one allowed to talk to it (on a remote machine, that
+# must be the user the managing machine logs in as over ssh).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# The checkout path is written into the user unit and launcher (sed s|__HERE__|...|): refuse a path
+# that would break that substitution or the unit's ExecStart quoting.
+[[ $HERE =~ ^[A-Za-z0-9._/+-]+$ ]] || { echo "install.sh: move the checkout to a path without spaces or special characters (now: $HERE)" >&2; exit 2; }
 LIB=/usr/local/lib/gpu-tuner
 ETC=/etc/gpu-tuner
 STATE=/var/lib/gpu-tuner/state.json
@@ -22,12 +32,16 @@ APPS_DIR="$HOME/.local/share/applications"
 OLD_UNITS=(gpu-fan-curve.service gpu-power-limit.service)
 MODE=install
 DRY=0
+UI=1
 
 for arg in "$@"; do
+    # (modes are exclusive; --no-ui and --dry-run combine with install, --dry-run with any)
     case "$arg" in
         --dry-run) DRY=1 ;;
-        --uninstall) MODE=uninstall ;;
-        -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+        --uninstall) [[ $MODE == install ]] || { echo "install.sh: --uninstall and --node are separate runs" >&2; exit 2; }; MODE=uninstall ;;
+        --node) [[ $MODE == install ]] || { echo "install.sh: --uninstall and --node are separate runs" >&2; exit 2; }; MODE=node ;;
+        --no-ui) UI=0 ;;
+        -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
         *) echo "install.sh: unknown option $arg" >&2; exit 2 ;;
     esac
 done
@@ -72,12 +86,45 @@ command -v nvidia-smi >/dev/null || die "nvidia-smi not found"
 /usr/bin/python3 -I -c 'import pynvml' 2>/dev/null \
     || die "the system python cannot import pynvml (apt install python3-pynvml); the daemon runs as root with -I and sees no user site-packages"
 for f in gpu-tunerd gpu-tuner gpu_tuner/safety.py gpu_tuner/nvml.py gpu_tuner/daemon.py gpu_tuner/server.py \
+         gpu_tuner/node.py gpu_tuner/proto.py gpu_tuner/hosts.py gpu_tuner/hub.py gpu_tuner/cli.py \
+         gpu_tuner/seed.py gpu_tuner/probe.py \
          gpu-tunerd.service gpu-tuner-ui.service gpu-tuner.desktop icon.svg \
          web/index.html web/app.js web/style.css; do
     [[ -f "$HERE/$f" ]] || die "missing $HERE/$f"
 done
 /usr/bin/python3 -m py_compile "$HERE"/gpu_tuner/*.py || die "gpu_tuner does not compile"
+# An older distro pynvml can lack a setter; the daemon then reports that control as refused by the
+# driver rather than crashing, but say so up front instead of leaving it to be discovered.
+MISSING=$(/usr/bin/python3 -I -c '
+import pynvml
+need = ("nvmlDeviceSetPowerManagementLimit", "nvmlDeviceSetFanSpeed_v2", "nvmlDeviceSetDefaultFanSpeed_v2",
+        "nvmlDeviceSetGpuLockedClocks", "nvmlDeviceResetGpuLockedClocks", "nvmlDeviceSetPersistenceMode")
+print(" ".join(n for n in need if not hasattr(pynvml, n)))') || die "pynvml symbol check failed"
+if [[ -n $MISSING ]]; then
+    step "WARNING: this pynvml has no $MISSING — those controls will be refused on this machine (a newer nvidia-ml-py fixes it)"
+fi
 step "python + pynvml ok, all files present"
+
+# The code, root-owned, at the fixed path every mode shares (the daemon and remote pages run it).
+install_code() {
+    root install -d -m 755 "$LIB" "$LIB/gpu_tuner"
+    root install -m 755 "$HERE/gpu-tunerd" "$LIB/gpu-tunerd"
+    root install -m 755 "$HERE/gpu-tuner" "$LIB/gpu-tuner"
+    for f in "$HERE"/gpu_tuner/*.py; do root install -m 644 "$f" "$LIB/gpu_tuner/$(basename "$f")"; done
+}
+
+if [[ $MODE == node ]]; then
+    log "Node only (no services)"
+    if [[ -f $UNIT ]]; then
+        die "gpu-tunerd is installed here; upgrade it (and the code) with ./install.sh or ./install.sh --no-ui instead"
+    fi
+    install_code
+    if [[ $DRY -eq 1 ]]; then log "Dry run: nothing was changed"; exit 0; fi
+    "$LIB/gpu-tuner" node --check || die "the installed node could not read the GPUs"
+    log "Installed. A managing machine can now reach this one with:"
+    step "ssh <this-host> $LIB/gpu-tuner node --stdio     (restrict its key to that command: see README)"
+    exit 0
+fi
 
 if [[ $MODE == uninstall ]]; then
     log "Uninstall"
@@ -109,35 +156,37 @@ for u in "${OLD_UNITS[@]}"; do WAS[$u]=$(unit_state "$u"); step "$u: ${WAS[$u]}"
 step "gpu-tunerd.service: $(unit_state gpu-tunerd.service)"
 
 # Seed the daemon's state with the caps in force RIGHT NOW so the takeover keeps them. Stopping
-# gpu-power-limit runs its ExecStop, which restores factory defaults (Workstation card -> 600 W)
-# for the second or two until gpu-tunerd starts and applies this file.
+# gpu-power-limit (if this machine has it) runs its ExecStop, which restores factory defaults for
+# the second or two until gpu-tunerd starts and applies this file. The budget defaults to the sum
+# of those caps — whatever THIS machine already runs at, not a number from anyone else's circuit —
+# or null if no card reports a settable cap (gpu_tuner/seed.py).
 SEED=$(mktemp)
-trap 'rm -f "$SEED"' EXIT
+trap 'rm -f "$SEED" "$SEED".*' EXIT
 nvidia-smi --query-gpu=uuid,power.limit --format=csv,noheader,nounits > "$SEED.csv" \
     || die "nvidia-smi query failed"
-/usr/bin/python3 - "$SEED.csv" "$SEED" "$SEED.budget" <<'PY' || die "could not build the seed state"
-import csv, json, sys
-gpus = {}
-with open(sys.argv[1]) as f:
-    for uuid, limit in csv.reader(f):
-        gpus[uuid.strip()] = {"power_w": int(round(float(limit))), "clock_cap_mhz": None,
-                              "fan": {"mode": "curve", "curve": [[30, 30], [45, 45], [55, 60], [65, 75], [72, 88], [80, 100]],
-                                      "manual_pct": 60}}
-if not gpus:
-    sys.exit("no GPUs in nvidia-smi output")
-json.dump({"version": 1, "gpus": gpus}, open(sys.argv[2], "w"), indent=1)
-# Portable default: whatever the combined caps already are RIGHT NOW, on THIS machine's cards —
-# not a number this lab derived from its own circuit. safety.DEFAULT_GPU_BUDGET_W (750) is only
-# the last-resort fallback if config.json is ever hand-deleted with no live GPUs to seed from.
-total = sum(g["power_w"] for g in gpus.values())
-open(sys.argv[3], "w").write(str(total))
-print("  seed: " + ", ".join(f"{u[:12]}… {g['power_w']} W" for u, g in gpus.items()) + f" ({total} W total)")
-PY
+# Fans keep the driver's curve on a new machine; only a machine that already ran a
+# gpu-fan-curve service starts on the lab curve, so taking over never changes its fan behaviour.
+FAN_MODE=auto
+[[ ${WAS[gpu-fan-curve.service]} == absent ]] || FAN_MODE=curve
+/usr/bin/python3 "$HERE/gpu_tuner/seed.py" --fan-mode "$FAN_MODE" "$SEED.csv" "$SEED" "$SEED.budget" \
+    || die "could not build the seed state"
 rm -f "$SEED.csv"
 BUDGET_W=$(cat "$SEED.budget")
-if [[ ! -f "$STATE" ]]; then step "will seed $STATE with the caps above and the lab fan curve"; else step "$STATE exists: keeping your saved settings, seed unused"; fi
+[[ $BUDGET_W == null || $BUDGET_W =~ ^[0-9]+$ ]] || die "seed produced an unexpected budget: $BUDGET_W"
+# /var/lib/gpu-tuner is root-only (0700), so only root can tell whether a saved state.json exists:
+# testing it as yourself always says "missing", and an upgrade would then reseed it — losing your
+# saved fan curves and clock caps. A dry run checks only if sudo needs no password right now.
+HAVE_STATE=unknown
+if [[ $DRY -eq 0 ]] || sudo -n true 2>/dev/null; then
+    if sudo test -e "$STATE"; then HAVE_STATE=yes; else HAVE_STATE=no; fi
+fi
+case $HAVE_STATE in
+    yes) step "$STATE exists: keeping your saved settings, seed unused" ;;
+    no)  step "will seed $STATE with the caps above" ;;
+    *)   step "dry run without cached sudo: can't see into $(dirname "$STATE"); a real run keeps $STATE if it exists" ;;
+esac
 
-CONFIG_JSON=$(printf '{\n  "allowed_uid": %d,\n  "gpu_budget_w": %d,\n  "interval_s": 2\n}\n' "$(id -u)" "$BUDGET_W")
+CONFIG_JSON=$(printf '{\n  "allowed_uid": %d,\n  "gpu_budget_w": %s,\n  "interval_s": 2\n}\n' "$(id -u)" "$BUDGET_W")
 
 log "Installing (sudo)"
 INSTALLED=0
@@ -147,9 +196,11 @@ rollback() {   # called from the EXIT trap with the script's exit status as $1
         log "FAILED (exit $rc) — rolling back to the previous units"
         sudo systemctl disable --now gpu-tunerd.service 2>/dev/null || true
         sudo rm -f "$UNIT"; sudo rm -rf "$LIB"; sudo systemctl daemon-reload
-        systemctl --user disable --now gpu-tuner-ui.service 2>/dev/null || true
-        rm -f "$USER_UNIT_DIR/gpu-tuner-ui.service" "$APPS_DIR/gpu-tuner.desktop"
-        systemctl --user daemon-reload 2>/dev/null || true
+        if [[ $UI -eq 1 ]]; then         # a --no-ui run never touched the UI unit: leave any it found
+            systemctl --user disable --now gpu-tuner-ui.service 2>/dev/null || true
+            rm -f "$USER_UNIT_DIR/gpu-tuner-ui.service" "$APPS_DIR/gpu-tuner.desktop"
+            systemctl --user daemon-reload 2>/dev/null || true
+        fi
         for u in "${OLD_UNITS[@]}"; do
             [[ ${WAS[$u]} == enabled* ]] && sudo systemctl enable --now "$u" || true
         done
@@ -159,19 +210,24 @@ rollback() {   # called from the EXIT trap with the script's exit status as $1
 }
 trap 'rollback $?' EXIT
 
-root install -d -m 755 "$LIB" "$LIB/gpu_tuner"
-root install -m 755 "$HERE/gpu-tunerd" "$LIB/gpu-tunerd"
-for f in "$HERE"/gpu_tuner/*.py; do root install -m 644 "$f" "$LIB/gpu_tuner/$(basename "$f")"; done
+install_code
 root install -d -m 755 "$ETC"
 if [[ ! -f $ETC/config.json ]]; then
-    step "writing $ETC/config.json (allowed_uid=$(id -u), gpu_budget_w=$BUDGET_W — the sum of the caps above; raise it any time from the page)"
+    if [[ $BUDGET_W == null ]]; then
+        step "writing $ETC/config.json (allowed_uid=$(id -u), no power budget: no card here reports a settable cap)"
+    else
+        step "writing $ETC/config.json (allowed_uid=$(id -u), gpu_budget_w=$BUDGET_W — the sum of the caps above; raise it any time from the page)"
+    fi
     if [[ $DRY -eq 1 ]]; then printf '%s\n' "$CONFIG_JSON" | sed 's/^/      /'; else printf '%s\n' "$CONFIG_JSON" | sudo tee "$ETC/config.json" >/dev/null; fi
     root chmod 644 "$ETC/config.json"
 else
     step "$ETC/config.json exists: keeping it (including its gpu_budget_w)"
 fi
 root install -d -m 700 "$(dirname "$STATE")"
-if [[ ! -f "$STATE" ]]; then root install -m 600 "$SEED" "$STATE"; fi
+if [[ $HAVE_STATE != yes ]]; then
+    [[ $HAVE_STATE == no ]] || step "(only if $STATE does not exist yet:)"
+    root install -m 600 "$SEED" "$STATE"
+fi
 sed "s|__HERE__|$HERE|g" "$HERE/gpu-tunerd.service" > "$SEED.root-unit"
 root install -m 644 "$SEED.root-unit" "$UNIT"
 root systemctl daemon-reload
@@ -187,6 +243,7 @@ step "starting gpu-tunerd"
 root systemctl enable gpu-tunerd.service
 root systemctl restart gpu-tunerd.service
 
+if [[ $UI -eq 1 ]]; then
 log "Installing the UI for $(id -un)"
 # Both templates carry __HERE__ so the UI runs from wherever this checkout lives.
 sed "s|__HERE__|$HERE|g" "$HERE/gpu-tuner-ui.service" > "$SEED.unit"
@@ -200,6 +257,9 @@ me systemctl --user enable gpu-tuner-ui.service
 me systemctl --user restart gpu-tuner-ui.service
 me install -d "$APPS_DIR"
 me install -m 644 "$SEED.desktop" "$APPS_DIR/gpu-tuner.desktop"
+else
+    step "--no-ui: skipping the web UI unit and launcher (manage this machine from another machine's page)"
+fi
 
 if [[ $DRY -eq 1 ]]; then
     log "Dry run: nothing was changed"
@@ -221,14 +281,51 @@ while not buf.endswith(b"\n"):
     buf += c
 d = json.loads(buf)
 if not d.get("ok"): sys.exit("daemon status: " + str(d.get("error")))
-print("  daemon ok · budget %d/%d W · %s" % (d["budget_used_w"], d["budget_w"],
-      " · ".join("%s %s W fan=%s%%" % (g["profile"]["label"] if g["profile"] else g["name"], g["settings"]["power_w"], g["fan"]["fan_pct"]) for g in d["gpus"])))
+budget = "no budget" if d["budget_w"] is None else "budget %s/%s W" % (d["budget_used_w"], d["budget_w"])
+print("  daemon ok · %s · %s" % (budget,
+      " · ".join("%s %s fan=%s" % (g["profile"]["label"] if g["profile"] else g["name"],
+                                   "-" if g["settings"]["power_w"] is None else "%s W" % g["settings"]["power_w"],
+                                   "-" if g["fan"]["fan_pct"] is None else "%s%%" % g["fan"]["fan_pct"]) for g in d["gpus"])))
 for w in d["warnings"]: print("  WARNING " + w)
 PY
 ) || die "the daemon did not answer on its socket"
 echo "$STATUS"
 step "limits in force: $(nvidia-smi --query-gpu=name,power.limit --format=csv,noheader | tr '\n' ';' || echo unavailable)"
+if [[ $UI -eq 0 ]]; then
+    log "Installed (daemon only). A managing machine reaches this one with:"
+    step "ssh <this-host> $LIB/gpu-tuner node --stdio     (restrict its key to that command: see README)"
+    exit 0
+fi
 systemctl --user is-active --quiet gpu-tuner-ui.service || { systemctl --user status gpu-tuner-ui --no-pager; die "the UI service is not running"; }
+# "active" isn't enough: a unit sandboxing property once made the page unable to reach the daemon
+# socket, and the page came up silently monitor-only. Ask the page itself what it sees. The session
+# token is read from your own config dir and never printed.
+/usr/bin/python3 - "$HOME/.config/gpu-tuner/token" <<'CHECK' || die "the page is running but does not reach the control daemon (journalctl --user -u gpu-tuner-ui)"
+import http.client, json, os, sys, time
+deadline = time.time() + 25
+while True:
+    try:
+        with open(sys.argv[1]) as f:
+            tok = f.read().strip()
+        c = http.client.HTTPConnection("127.0.0.1", 8765, timeout=3)
+        c.request("GET", "/api/state", headers={"Host": "127.0.0.1:8765", "Cookie": "gpu_tuner=" + tok})
+        st = json.loads(c.getresponse().read())
+        local = [h for h in st["hosts"] if h["id"] == "local"]
+        if not local:
+            print("  page check skipped: hosts.json lists no local machine")
+            sys.exit(0)
+        h = local[0]
+        if h["conn"] == "up" and h["daemon"] is not None:
+            if h["daemon_error"]:
+                sys.exit("  the page says this machine's daemon is " + h["daemon_error"])
+            print("  the page reaches the daemon: controls on")
+            sys.exit(0)
+    except (OSError, ValueError, KeyError):
+        pass
+    if time.time() > deadline:
+        sys.exit("  the page did not report this machine within 25 s")
+    time.sleep(1)
+CHECK
 step "UI on http://127.0.0.1:8765/"
 
 log "Installed. Open it with:  $HERE/gpu-tuner open   (or 'GPU Tuner' in the app launcher)"

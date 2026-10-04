@@ -1,4 +1,5 @@
-# User unit: runs as you, serves the page on 127.0.0.1:8765, talks to gpu-tunerd over its socket.
+# User unit: runs as you, serves the page on 127.0.0.1:8765, and talks to every machine's
+# `gpu-tuner node` (this machine's as a subprocess, others over ssh).
 # install.sh fills in __HERE__, puts it in ~/.config/systemd/user/ and enables it with `systemctl --user`.
 [Unit]
 Description=gpu-tuner web UI (127.0.0.1:8765)
@@ -10,20 +11,30 @@ ExecStart=__HERE__/gpu-tuner serve
 Restart=on-failure
 RestartSec=3
 
-# Hardening. This process parses attacker-reachable HTTP input (a security review flagged it as
-# having none, unlike its root sibling gpu-tunerd.service — this brings it to a comparable
-# baseline). It needs: outbound-free but listening TCP on loopback (AF_INET/AF_INET6), the
-# daemon's Unix socket (AF_UNIX), and read+write on its own config/session dir.
+# Hardening. This process parses attacker-reachable HTTP input. It needs: listening TCP on
+# loopback and outbound TCP for ssh to managed machines (AF_INET/AF_INET6), the local daemon's
+# Unix socket (AF_UNIX), and to run python and ssh as children.
+#
+# Deliberately NOT ProtectSystem / ProtectHome / PrivateTmp: in a *user* unit those need a mount
+# namespace, which systemd builds inside an unprivileged user namespace — and from inside it the
+# root daemon's socket refuses the connection. Measured 2026-10-03 on Ubuntu 26.04, each of the
+# three alone:
+#   systemd-run --user --pipe --wait -p ProtectHome=read-only /usr/bin/python3 -c \
+#     'import socket; socket.socket(socket.AF_UNIX).connect("/run/gpu-tuner/control.sock")'
+#   -> PermissionError: [Errno 13] Permission denied     (without the -p: connects)
+# An earlier version of this file had them, and the page would have come up silently monitor-only;
+# install.sh now checks the page really reaches the daemon. Everything below is seccomp/prctl
+# based, works in a user unit, and was checked against the daemon socket, the node and ssh.
 NoNewPrivileges=yes
-ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=%h/.config/gpu-tuner
-PrivateTmp=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 MemoryDenyWriteExecute=yes
 RestrictNamespaces=yes
 LockPersonality=yes
 RestrictRealtime=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+RestrictSUIDSGID=yes
+UMask=0077
 
 [Install]
 WantedBy=default.target

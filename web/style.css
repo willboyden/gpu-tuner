@@ -27,6 +27,8 @@
 }
 
 * { box-sizing: border-box; }
+/* `hidden` must win over any display rule below (fieldsets, grids and tab rows set their own). */
+[hidden] { display: none !important; }
 html { -webkit-text-size-adjust: 100%; }
 body {
   margin: 0; background: var(--page); color: var(--ink);
@@ -200,6 +202,27 @@ table { border-collapse: collapse; width: 100%; font-size: 12.5px; font-variant-
 th, td { text-align: right; padding: 4px 10px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
 th:first-child, td:first-child { text-align: left; }
 thead th { color: var(--ink2); font-weight: 600; position: sticky; top: 0; background: var(--surface); }
+
+/* machines: fleet strip, tabs, one view per machine */
+.hostview { display: grid; gap: 16px; min-width: 0; }
+.hostview > * { min-width: 0; }
+.hostview.offline .gpu { opacity: .62; }
+.fleet-wrap { padding: 0; margin-top: 8px; }
+#fleet-table td:nth-child(-n+3), #fleet-table th:nth-child(-n+3) { text-align: left; }
+#fleet-table tr.off td { color: var(--muted); }
+#fleet-table tr.cont td { border-top: 0; }
+.linkish {
+  border: 0; background: none; padding: 0; border-radius: 3px; color: var(--accent); font-weight: 600;
+  text-decoration: underline; text-underline-offset: 2px;
+}
+.linkish:hover:not(:disabled) { background: none; }
+.linkish[aria-current="true"] { color: var(--ink); text-decoration: none; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.tab { display: inline-flex; align-items: center; gap: 7px; }
+.tab[aria-selected="true"] { background: var(--wash); border-color: var(--axis); font-weight: 650; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.dot.good { background: var(--good); } .dot.warning { background: var(--warning); } .dot.critical { background: var(--critical); }
 
 .excluded { margin: 12px 0 0; display: grid; gap: 12px; max-width: 86ch; }
 .excluded dt { font-weight: 650; }
