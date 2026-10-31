@@ -1,0 +1,66 @@
+name: Tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Python tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: python -m pip install nvidia-ml-py
+
+      - name: Check Python syntax
+        run: |
+          python -m compileall -q gpu_tuner container
+
+      - name: Validate Community Applications icon assets
+        run: python tests/check_unraid_assets.py
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            -f container/Dockerfile \
+            -t gpu-tuner-unraid:ci \
+            .
+
+      - name: Run Unraid packaging tests
+        run: |
+          docker run --rm \
+            --entrypoint python \
+            --mount type=bind,src="$PWD",dst=/workspace,readonly \
+            --workdir /workspace \
+            gpu-tuner-unraid:ci \
+            -m unittest discover -s tests -p 'test_unraid_*.py' -v
+
+      - name: Test installed image first-run flow without GPU
+        run: |
+          docker run --rm --network none \
+            --tmpfs /data \
+            --entrypoint python \
+            --mount type=bind,src="$PWD/tests/container_install_smoke.py",dst=/checks/install.py,readonly \
+            gpu-tuner-unraid:ci -B /checks/install.py
+
+      - name: Run offline upstream regression tests
+        run: |
+          docker run --rm --network none --entrypoint bash \
+            --mount type=bind,src="$PWD",dst=/workspace,readonly \
+            --workdir /workspace gpu-tuner-unraid:ci \
+            tests/gpu-tuner-test.sh

@@ -1,2 +1,12 @@
 __pycache__/
 *.pyc
+
+# Python generated files
+__pycache__/
+*.py[cod]
+
+# Local configuration and credentials
+.env
+config.json
+state.json
+token

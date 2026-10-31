@@ -238,7 +238,7 @@ class DaemonBehaviour(unittest.TestCase):
         d, lib = make_daemon(self.tmp)
         self.assertEqual(d.settings[MAXQ]["power_w"], 300)
         self.assertEqual(d.settings[WS]["power_w"], 450)
-        self.assertEqual(d.settings[WS]["fan"]["mode"], "curve")
+        self.assertEqual(d.settings[WS]["fan"]["mode"], "auto")
 
     def test_saved_state_over_budget_falls_back(self):
         state = {"version": 1, "gpus": {MAXQ: {"power_w": 325}, WS: {"power_w": 600}}}
@@ -322,6 +322,8 @@ class DaemonBehaviour(unittest.TestCase):
 
     def test_fan_loop_applies_curve_with_floor(self):
         d, lib = make_daemon(self.tmp)
+        for uuid in (MAXQ, WS):
+            d.settings[uuid]["fan"]["mode"] = "curve"
         lib.cards[0]["temp"] = 65
         d.tick(100.0)
         self.assertIn((0, 0, 75), lib.fan_writes)           # lab curve: 65 C -> 75%
@@ -332,6 +334,8 @@ class DaemonBehaviour(unittest.TestCase):
 
     def test_fan_write_refused_hands_back_to_driver(self):
         d, lib = make_daemon(self.tmp)
+        for uuid in (MAXQ, WS):
+            d.settings[uuid]["fan"]["mode"] = "curve"
         lib.refuse_fan = True
         d.tick(100.0)
         self.assertIn((0, 0), lib.fan_auto)
@@ -340,6 +344,8 @@ class DaemonBehaviour(unittest.TestCase):
 
     def test_unreadable_temperature_hands_back_to_driver(self):
         d, lib = make_daemon(self.tmp)
+        for uuid in (MAXQ, WS):
+            d.settings[uuid]["fan"]["mode"] = "curve"
         lib.refuse_temp = True
         d.tick(100.0)
         self.assertTrue(lib.fan_auto)
@@ -538,6 +544,7 @@ class OldPynvml(unittest.TestCase):
     def test_missing_setter_is_an_nvml_error_and_the_fan_loop_survives_it(self):
         tmp = tempfile.mkdtemp()
         d, lib = make_daemon(tmp, lib=FakeOldLib())
+        d.settings[MAXQ]["fan"]["mode"] = "curve"
         with self.assertRaises(d.nv.Error):
             d.nv.set_fan_pct(d.nv.gpus[0], 60)
         d.tick(1000.0)                                        # must not raise

@@ -77,7 +77,7 @@ class Simulation(unittest.TestCase):
                 self.assertTrue(all(math.isfinite(v) for v in vals if v is not None))
         utils = [r[2][5] for r in rows]
         self.assertGreater(max(utils), 80)              # the charts show work...
-        self.assertLess(min(utils), 10)                 # ...and idle gaps
+        self.assertTrue(any(u < 10 for u in utils), f"history never had an idle gap: {min(utils)=}, {max(utils)=}")
 
     def test_a_gb10_has_a_soc_temperature_above_its_gpu_die(self):
         rows = demo.history_rows("edge-gb10", int(time.time()), seconds=600)

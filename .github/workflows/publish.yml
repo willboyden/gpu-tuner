@@ -1,0 +1,72 @@
+name: Publish Unraid image
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag, for example 1.3.1-unraid.1-beta.1'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: publish-unraid-image
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: ghcr.io/0sy/gpu-tuner-unraid
+      RELEASE_VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate version
+        shell: bash
+        run: |
+          [[ "$GITHUB_REPOSITORY" == "0sy/gpu-tuner-unraid" ]]
+          [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-unraid\.[0-9]+(-beta\.[0-9]+)?$ ]]
+
+      - name: Verify public Community Applications assets before publication
+        run: python3 tests/check_unraid_assets.py --public
+
+      - name: Build release image
+        run: |
+          docker build --pull -f container/Dockerfile \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --label "org.opencontainers.image.version=$RELEASE_VERSION" \
+            -t "$IMAGE:$RELEASE_VERSION" -t "$IMAGE:latest" .
+
+      - name: Run Unraid regression tests
+        run: |
+          docker run --rm --network none --entrypoint python \
+            --mount type=bind,src="$PWD",dst=/workspace,readonly \
+            --workdir /workspace "$IMAGE:$RELEASE_VERSION" \
+            -B -m unittest discover -s tests -p 'test_unraid_*.py' -v
+
+      - name: Run offline upstream regression tests
+        run: |
+          docker run --rm --network none --entrypoint bash \
+            --mount type=bind,src="$PWD",dst=/workspace,readonly \
+            --workdir /workspace "$IMAGE:$RELEASE_VERSION" \
+            tests/gpu-tuner-test.sh
+
+      - name: Check installed first-run and reset flow
+        run: |
+          docker run --rm --network none --tmpfs /data --entrypoint python \
+            --mount type=bind,src="$PWD/tests/container_install_smoke.py",dst=/checks/install.py,readonly \
+            "$IMAGE:$RELEASE_VERSION" -B /checks/install.py
+
+      - name: Log in to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - name: Publish tested image
+        run: |
+          docker push "$IMAGE:$RELEASE_VERSION"
+          docker push "$IMAGE:latest"

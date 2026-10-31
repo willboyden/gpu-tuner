@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CommunityApplications>
+  <Profile>GPU Tuner for Unraid, maintained by 0sy. Unraid container packaging and password-authenticated WebUI for willboyden/gpu-tuner. Report Unraid packaging issues at https://github.com/0sy/gpu-tuner-unraid/issues.</Profile>
+  <Icon>https://raw.githubusercontent.com/0sy/gpu-tuner-unraid/main/icon.png</Icon>
+  <WebPage>https://github.com/0sy/gpu-tuner-unraid</WebPage>
+</CommunityApplications>

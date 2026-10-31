@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Container version="2">
+  <Name>gpu-tuner</Name>
+  <Repository>ghcr.io/0sy/gpu-tuner-unraid:latest</Repository>
+  <Registry>https://ghcr.io/0sy/gpu-tuner-unraid</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/0sy/gpu-tuner-unraid/issues</Support>
+  <Project>https://github.com/0sy/gpu-tuner-unraid</Project>
+  <Overview>NVIDIA GPU monitoring, power limits, fan curves and clock caps for Unraid. Requires the NVIDIA Driver plugin and a compatible GPU. Set the WebUI URL to http://YOUR-UNRAID-IP:8765 and supply an initial password of 12–1024 characters. Settings and credentials persist in appdata. GPU control requires SYS_ADMIN; privileged mode is not required. Use on a trusted LAN.</Overview>
+  <Category>Tools:Utilities</Category>
+  <WebUI>http://[IP]:[PORT:8765]/</WebUI>
+  <Icon>https://raw.githubusercontent.com/0sy/gpu-tuner-unraid/main/icon.png</Icon>
+  <TemplateURL>https://raw.githubusercontent.com/0sy/gpu-tuner-unraid/main/templates/gpu-tuner.xml</TemplateURL>
+  <ExtraParams>--gpus all --cap-add=SYS_ADMIN --stop-timeout=45</ExtraParams>
+  <PostArgs/>
+  <Beta>true</Beta>
+  <Config Name="Appdata" Target="/data" Default="/mnt/user/appdata/gpu-tuner" Mode="rw" Description="Persistent GPU settings and WebUI credentials. Use a dedicated directory; do not share with another running GPU Tuner instance." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/gpu-tuner</Config>
+  <Config Name="WebUI Port" Target="8765" Default="8765" Mode="tcp" Description="WebUI port on the Unraid host. Match this port in WebUI URL." Type="Port" Display="always" Required="true" Mask="false">8765</Config>
+  <Config Name="WebUI URL" Target="GPU_TUNER_PUBLIC_URL" Default="" Mode="" Description="Required: exact browser URL, e.g. http://192.168.1.10:8765. Use your Unraid IP and the host WebUI port. No path. This permits the Host and Origin used by your browser." Type="Variable" Display="always" Required="true" Mask="false"/>
+  <Config Name="Initial WebUI Password" Target="GPU_TUNER_INITIAL_PASSWORD" Default="" Mode="" Description="First install only: 12–1024 characters. Ignored once a password hash exists. Required for installation. After successful login, enable Advanced View, remove this variable and Apply to remove the plaintext from Docker configuration and the saved template." Type="Variable" Display="always" Required="true" Mask="true"/>
+</Container>

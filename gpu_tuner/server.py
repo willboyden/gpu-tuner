@@ -30,15 +30,22 @@ from urllib.parse import parse_qs, urlsplit
 from . import __version__, hosts, hub, proto
 from .daemon import DEFAULT_SOCKET
 from .nvml import REASONS
+from .browser_sessions import BrowserSessions
+from .login_limit import LoginLimiter
+from .password_auth import verify_password, valid_password_hash
 
 DEFAULT_PORT = 8765
 COOKIE = "gpu_tuner"
+REMEMBER_SECONDS = 400 * 24 * 60 * 60  # Renewed during authenticated use.
 NONCE_TTL_S = 60
 NONCE_RE = re.compile(r"^[A-Za-z0-9_-]{32,64}$")
 WEB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
           "/app.js": ("app.js", "text/javascript; charset=utf-8"),
-          "/style.css": ("style.css", "text/css; charset=utf-8")}
+          "/style.css": ("style.css", "text/css; charset=utf-8"),
+          "/theme.js": ("theme.js", "text/javascript; charset=utf-8"),
+          "/login": ("login.html", "text/html; charset=utf-8"),
+          "/login.js": ("login.js", "text/javascript; charset=utf-8")}
 
 
 def config_dir():
@@ -104,11 +111,76 @@ def state_json(h: hub.Hub, demo=False):
     return out
 
 
+
+def public_url_host(value):
+    """Return the exact HTTP Host for a configured LAN URL."""
+    from urllib.parse import urlsplit
+    import ipaddress
+
+    if not value:
+        return None
+
+    url = urlsplit(value)
+
+    if (
+        url.scheme != "http"
+        or not url.netloc
+        or url.username is not None
+        or url.password is not None
+        or url.path not in ("", "/")
+        or url.query
+        or url.fragment
+    ):
+        raise ValueError(
+            "GPU_TUNER_PUBLIC_URL must be an HTTP URL without credentials, "
+            "a path, query or fragment"
+        )
+
+    try:
+        hostname = url.hostname
+        port = url.port
+        if hostname is None or port is None:
+            raise ValueError("explicit port required")
+
+        # Require a literal IPv4 address or localhost. Do not allow
+        # arbitrary DNS names in the Host allowlist.
+        if hostname != "localhost":
+            hostname = str(ipaddress.IPv4Address(hostname))
+
+        expected = f"{hostname}:{port}"
+        if url.netloc != expected:
+            raise ValueError("noncanonical host or port")
+
+        if not 1 <= port <= 65535:
+            raise ValueError("invalid port")
+
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid GPU_TUNER_PUBLIC_URL {value!r}: {exc}"
+        ) from exc
+
+    return expected
+
 def make_handler(h: hub.Hub, token: str, port: int, cookie: str = COOKIE, demo: bool = False):
     """The page's request handler. `cookie` names the session cookie: demo mode uses its own, so
     signing in to a demo never replaces the real page's cookie (cookies ignore the port)."""
     allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
+    lan_ip = os.environ.get("GPU_TUNER_LAN_IP", "").strip()
+    if lan_ip:
+        import ipaddress
+        lan_ip = str(ipaddress.IPv4Address(lan_ip))
+        allowed_hosts.add(f"{lan_ip}:{port}")
+    public_host = public_url_host(
+        os.environ.get("GPU_TUNER_PUBLIC_URL", "").strip()
+    )
+    if public_host:
+        allowed_hosts.add(public_host)
+
     origins = {f"http://{x}" for x in allowed_hosts}
+    login_limiter = LoginLimiter()
+    browser_sessions = BrowserSessions(
+        persistence_path=os.path.join(config_dir(), "browser-sessions.json"),
+    )
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "gpu-tuner"
@@ -132,6 +204,9 @@ def make_handler(h: hub.Hub, token: str, port: int, cookie: str = COOKIE, demo: 
                              "default-src 'none'; script-src 'self'; style-src 'self'; "
                              "connect-src 'self'; img-src 'self' data:; base-uri 'none'; "
                              "form-action 'none'; frame-ancestors 'none'")
+            refresh = getattr(self, "_remembered_token", None)
+            if refresh and not any(k.lower() == "set-cookie" for k, _ in extra):
+                self.send_header("Set-Cookie", self._browser_cookie(refresh, True))
             for k, v in extra:
                 self.send_header(k, v)
             self.end_headers()
@@ -144,13 +219,47 @@ def make_handler(h: hub.Hub, token: str, port: int, cookie: str = COOKIE, demo: 
             except cookies.CookieError:
                 return False
             got = jar.get(cookie)
-            return got is not None and hmac.compare_digest(got.value, token)
+            if got is None:
+                return False
+            if hmac.compare_digest(got.value, token):
+                return True
+            if not browser_sessions.valid(got.value, self._password_credential()):
+                return False
+            if browser_sessions.remembered(got.value):
+                self._remembered_token = got.value
+            return True
+
+        def _browser_cookie(self, browser_token, remember):
+            persistence = f"; Max-Age={REMEMBER_SECONDS}" if remember else ""
+            return f"{cookie}={browser_token}; HttpOnly; SameSite=Strict; Path=/{persistence}"
+
+        def _password_credential(self):
+            """Read the current credential without performing password hashing."""
+            try:
+                with open(os.path.join(config_dir(), "password.hash"), encoding="ascii") as f:
+                    stored = f.read(256).strip()
+                if valid_password_hash(stored):
+                    return stored
+            except (OSError, ValueError, UnicodeError):
+                pass
+            return None
 
         def _gate(self):
             if self.headers.get("Host") not in allowed_hosts:
                 self._send(421, {"error": "bad host"})
                 return False
             return True
+
+        def _static_body(self, name):
+            with open(os.path.join(WEB, name), "rb") as f:
+                body = f.read()
+            if name == "login.html":
+                container = os.environ.get("HOST_CONTAINERNAME", "gpu-tuner")
+                if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", container):
+                    container = "gpu-tuner"
+                body = body.replace(b"docker exec -it gpu-tuner ",
+                                    f"docker exec -it {container} ".encode("ascii"))
+            return body
 
         def do_GET(self):
             if not self._gate():
@@ -166,14 +275,26 @@ def make_handler(h: hub.Hub, token: str, port: int, cookie: str = COOKIE, demo: 
                     self._send(403, b"That link has expired or was already used. Run: gpu-tuner open\n",
                                "text/plain; charset=utf-8")
                 return
+            password_enabled = os.path.isfile(
+                os.path.join(config_dir(), "password.hash"))
+
+            if password_enabled and url.path in (
+                "/login", "/login.js", "/theme.js", "/style.css"
+            ):
+                name, ctype = STATIC[url.path]
+                self._send(200, self._static_body(name), ctype)
+                return
+
             if not self._authed():
-                self._send(401, b"Not signed in. Open gpu-tuner from the app launcher, or run:\n\n"
-                                b"    gpu-tuner open\n", "text/plain; charset=utf-8")
+                if password_enabled and url.path == "/":
+                    self._send(303, b"", "text/plain", extra=(("Location", "/login"),))
+                else:
+                    self._send(401, b"Not signed in. Open gpu-tuner from the app launcher, or run:\n\n"
+                                    b"    gpu-tuner open\n", "text/plain; charset=utf-8")
                 return
             if url.path in STATIC:
                 name, ctype = STATIC[url.path]
-                with open(os.path.join(WEB, name), "rb") as f:
-                    self._send(200, f.read(), ctype)
+                self._send(200, self._static_body(name), ctype)
             elif url.path == "/api/state":
                 self._send(200, state_json(h, demo))
             elif url.path == "/api/history":
@@ -189,14 +310,97 @@ def make_handler(h: hub.Hub, token: str, port: int, cookie: str = COOKIE, demo: 
             else:
                 self._send(404, {"error": "not found"})
 
+        def _password_login(self):
+            if self.headers.get("Origin") not in origins:
+                self._send(403, {"error": "cross-origin request refused"})
+                return
+
+            if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
+                self._send(415, {"error": "application/json only"})
+                return
+
+            try:
+                length = int(self.headers.get("Content-Length", ""))
+                if not 0 < length <= 4096:
+                    raise ValueError("invalid length")
+            except ValueError:
+                self._send(400, {"error": "invalid request"})
+                return
+
+            if not login_limiter.allow():
+                self._send(429, {"error": "too many login attempts"})
+                return
+
+            try:
+                body = json.loads(self.rfile.read(length))
+                if (not isinstance(body, dict) or "password" not in body
+                        or set(body) - {"password", "remember"}):
+                    raise ValueError("invalid body")
+                remember = body.get("remember", False)
+                if not isinstance(remember, bool):
+                    raise ValueError("invalid remember choice")
+                password = body["password"]
+                if (
+                    not isinstance(password, str)
+                    or not 12 <= len(password) <= 1024
+                    or "\x00" in password
+                ):
+                    raise ValueError("invalid password")
+            except (ValueError, UnicodeError, TypeError):
+                self._send(400, {"error": "invalid request"})
+                return
+
+            stored = self._password_credential()
+            if stored is None:
+                self._send(503, {"error": "password authentication unavailable"})
+                return
+
+            if not verify_password(password, stored):
+                self._send(401, {"error": "invalid credentials"})
+                return
+
+            browser_token = browser_sessions.create(
+                stored, remember=remember,
+            )
+            self._send(
+                200,
+                {"ok": True},
+                extra=((
+                    "Set-Cookie",
+                    self._browser_cookie(browser_token, remember),
+                ),),
+            )
+
         def do_POST(self):
             if not self._gate():
+                return
+            if urlsplit(self.path).path == "/api/login":
+                self._password_login()
                 return
             if not self._authed():
                 self._send(401, {"error": "not signed in"})
                 return
             if self.headers.get("Origin") not in origins:
                 self._send(403, {"error": "cross-origin request refused"})
+                return
+            if urlsplit(self.path).path == "/api/logout":
+                jar = cookies.SimpleCookie()
+                try:
+                    jar.load(self.headers.get("Cookie", ""))
+                except cookies.CookieError:
+                    self._send(400, {"error": "invalid cookie"})
+                    return
+                current = jar.get(cookie)
+                if current is not None and not hmac.compare_digest(current.value, token):
+                    browser_sessions.revoke(current.value)
+                self._send(
+                    200,
+                    {"ok": True},
+                    extra=((
+                        "Set-Cookie",
+                        f"{cookie}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0",
+                    ),),
+                )
                 return
             if urlsplit(self.path).path != "/api/apply":
                 self._send(404, {"error": "not found"})
@@ -251,7 +455,7 @@ def cmd_serve(args):
     h = hub.Hub(machines, lambda m: make_link(m, args.socket))
     h.start()
     try:
-        httpd = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(h, token, args.port))
+        httpd = ThreadingHTTPServer((os.environ.get("GPU_TUNER_BIND", "127.0.0.1"), args.port), make_handler(h, token, args.port))
     except OSError as e:
         h.stop()
         sys.exit(f"gpu-tuner: cannot listen on 127.0.0.1:{args.port}: {e}")

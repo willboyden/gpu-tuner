@@ -153,7 +153,7 @@ class Daemon:
         rng = self.ranges[g.uuid]
         default = [list(p) for p in safety.default_curve(self._full_by(g))]
         s = {"power_w": None, "clock_cap_mhz": None,
-             "fan": {"mode": "curve", "curve": default, "manual_pct": 60}}
+             "fan": {"mode": "auto", "curve": default, "manual_pct": 60}}
         saved = saved if isinstance(saved, dict) else {}
         if rng is not None:
             live = self.nv.power_limit_w(g)
@@ -178,7 +178,7 @@ class Daemon:
             if "manual_pct" in fan:
                 s["fan"]["manual_pct"] = safety.validate_manual(fan["manual_pct"], g.fan_min)
         except safety.SafetyError as e:
-            s["fan"] = {"mode": "curve", "curve": default, "manual_pct": 60}
+            s["fan"] = {"mode": "auto", "curve": default, "manual_pct": 60}
             self.warn(f"{g.name}: saved fan settings rejected ({e}); using this card's default curve")
         try:
             s["clock_cap_mhz"] = safety.validate_clock_cap(saved.get("clock_cap_mhz"), g.clocks)

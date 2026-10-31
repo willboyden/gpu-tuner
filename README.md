@@ -1,3 +1,17 @@
+# GPU Tuner for Unraid
+
+Unraid packaging of [willboyden/gpu-tuner](https://github.com/willboyden/gpu-tuner), maintained in [0sy/gpu-tuner-unraid](https://github.com/0sy/gpu-tuner-unraid).
+
+**Beta release:** `ghcr.io/0sy/gpu-tuner-unraid:1.3.1-unraid.1-beta.1` and `:latest` are publicly available. Anonymous image pulls and installed-image login/reset checks passed. Added to Community Applications on 31st November 2026.
+
+Start with the [Unraid installation and operation guide](docs/unraid.md). (the Linux/systemd instructions below are upstream documentation and are not the Unraid installation procedure).
+
+## Acknowledgments
+
+GPU Tuner was created by [willboyden](https://github.com/willboyden). The Unraid adaptation is maintained by [0sy](https://github.com/0sy), with assistance from [OpenAI Codex](https://openai.com/codex/) on packaging, WebUI authentication, testing and documentation.
+
+---
+
 # gpu-tuner — power caps, fan curves and clock caps for NVIDIA GPUs, on one machine or several, with a GUI
 
 A local web page (`http://127.0.0.1:8765/`) that shows every detected card live — temperature

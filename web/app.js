@@ -44,25 +44,22 @@ function thermalRef(th) {
 const S = { st: null, sel: null, views: new Map(), hist: null, win: 300, hoverT: null, charts: [],
   tableOpen: false, signedOut: false };
 
-// ── theme ────────────────────────────────────────────────────────────────────────────────────
-(function theme() {
-  let saved = null;
-  try { saved = localStorage.getItem('gpu-tuner-theme'); } catch (e) { /* private mode */ }
-  if (saved) document.documentElement.dataset.theme = saved;
-  $('#theme').addEventListener('click', () => {
-    const dark = document.documentElement.dataset.theme
-      ? document.documentElement.dataset.theme === 'dark'
-      : matchMedia('(prefers-color-scheme: dark)').matches;
-    const next = dark ? 'light' : 'dark';
-    document.documentElement.dataset.theme = next;
-    try { localStorage.setItem('gpu-tuner-theme', next); } catch (e) { /* ignore */ }
-  });
-})();
-
 // ── api ──────────────────────────────────────────────────────────────────────────────────────
 async function getJSON(url) {
   const r = await fetch(url, { credentials: 'same-origin' });
-  if (r.status === 401) { S.signedOut = true; throw new Error('signed out'); }
+  if (r.status === 401) {
+    S.signedOut = true;
+    if (!S.loginRedirectPending) {
+      S.loginRedirectPending = true;
+      fetch('/login', { credentials: 'same-origin', redirect: 'manual' })
+        .then(response => {
+          if (response.status === 200) window.location.replace('/login');
+        })
+        .catch(() => {})
+        .finally(() => { S.loginRedirectPending = false; });
+    }
+    throw new Error('signed out');
+  }
   if (!r.ok) throw new Error('HTTP ' + r.status);
   S.signedOut = false;
   return r.json();
@@ -1019,7 +1016,7 @@ function render() {
 function setConn() {
   const c = $('#conn');
   let kind, text;
-  if (!S.st) { kind = 'critical'; text = S.signedOut ? 'Signed out: run “gpu-tuner open”' : 'Server not responding'; }
+  if (!S.st) { kind = 'critical'; text = S.signedOut ? 'Session expired — sign in again' : 'Server not responding'; }
   else if (!multi()) [kind, text] = linkChip(S.st.hosts[0]);
   else {
     const up = S.st.hosts.filter(h => h.conn === 'up').length, n = S.st.hosts.length;
@@ -1038,7 +1035,7 @@ async function pollState() {
   } catch (e) {
     const c = $('#conn');
     c.className = 'chip critical';
-    c.textContent = S.signedOut ? 'Signed out: run “gpu-tuner open”' : 'Server not responding';
+    c.textContent = S.signedOut ? 'Session expired — sign in again' : 'Server not responding';
   }
   setTimeout(pollState, 1000);
 }
@@ -1061,3 +1058,23 @@ async function pollHistory() {
 }
 pollState();
 pollHistory();
+
+// Browser logout — never sends a GPU-control request.
+$('#logout').addEventListener('click', async () => {
+  const button = $('#logout');
+  button.disabled = true;
+  try {
+    const response = await fetch('/api/logout', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    window.location.assign('/login');
+  } catch (error) {
+    button.disabled = false;
+    const banner = $('#banner');
+    banner.hidden = false;
+    banner.textContent = `Could not log out: ${error.message}`;
+  }
+});

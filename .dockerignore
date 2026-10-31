@@ -1,0 +1,12 @@
+*
+!gpu_tuner/
+!gpu_tuner/**
+!web/
+!web/**
+!gpu-tuner
+!gpu-tunerd
+!container/
+!container/Dockerfile
+!container/entrypoint.py
+**/__pycache__/
+**/*.py[cod]

@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in · GPU Tuner</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="top-in">
+    <h1>GPU Tuner</h1>
+    <span class="grow"></span>
+    <span class="meta">Unraid</span>
+    <button id="theme" class="ghost" type="button"
+            aria-label="Switch between light and dark mode">Light / dark mode</button>
+  </div>
+</header>
+
+<main class="login-layout">
+  <section class="panel login-card" aria-labelledby="login-title">
+    <h2 id="login-title">Sign in</h2>
+    <p class="sub">Enter your administrator password to access GPU Tuner.</p>
+
+    <form id="login-form">
+      <label for="password">Administrator password</label>
+      <input
+        id="password"
+        name="password"
+        type="password"
+        autocomplete="current-password"
+        minlength="12"
+        maxlength="1024"
+        required
+        autofocus
+      >
+      <label class="remember-choice" for="remember">
+        <input id="remember" name="remember" type="checkbox">
+        Remember me
+      </label>
+      <p id="login-error" role="alert" hidden></p>
+      <button id="login-button" class="primary" type="submit">
+        Sign in
+      </button>
+    </form>
+
+    <details class="password-recovery">
+      <summary>Forgot password?</summary>
+      <p>Open Terminal in Unraid and run this command. Enter and confirm a new password when prompted.</p>
+      <label for="reset-command">Password reset command</label>
+      <input id="reset-command" type="text" readonly spellcheck="false"
+             value="docker exec -it gpu-tuner python /usr/local/bin/gpu-tuner-entrypoint --reset-password">
+      <p class="sub">Replace gpu-tuner with your container name if different. No restart is needed.</p>
+      <button id="copy-reset" class="ghost" type="button">Copy command</button>
+      <p id="copy-status" role="status" aria-live="polite"></p>
+    </details>
+  </section>
+</main>
+
+<script src="/theme.js" defer></script>
+<script src="/login.js" defer></script>
+</body>
+</html>
