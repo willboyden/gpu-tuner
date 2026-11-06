@@ -87,9 +87,10 @@ command -v nvidia-smi >/dev/null || die "nvidia-smi not found"
     || die "the system python cannot import pynvml (apt install python3-pynvml); the daemon runs as root with -I and sees no user site-packages"
 for f in gpu-tunerd gpu-tuner gpu_tuner/safety.py gpu_tuner/nvml.py gpu_tuner/daemon.py gpu_tuner/server.py \
          gpu_tuner/node.py gpu_tuner/proto.py gpu_tuner/hosts.py gpu_tuner/hub.py gpu_tuner/cli.py \
-         gpu_tuner/seed.py gpu_tuner/probe.py gpu_tuner/demo.py \
+         gpu_tuner/seed.py gpu_tuner/probe.py gpu_tuner/demo.py gpu_tuner/configcheck.py \
          gpu-tunerd.service gpu-tuner-ui.service gpu-tuner.desktop icon.svg \
-         web/index.html web/app.js web/style.css; do
+         web/index.html web/app.js web/style.css web/help.js web/config.js \
+         web/help.en.json web/info.en.json; do
     [[ -f "$HERE/$f" ]] || die "missing $HERE/$f"
 done
 /usr/bin/python3 -m py_compile "$HERE"/gpu_tuner/*.py || die "gpu_tuner does not compile"
@@ -104,6 +105,35 @@ if [[ -n $MISSING ]]; then
     step "WARNING: this pynvml has no $MISSING — those controls will be refused on this machine (a newer nvidia-ml-py fixes it)"
 fi
 step "python + pynvml ok, all files present"
+
+# An upgrade keeps $ETC/config.json. If the NEW daemon would refuse it (a hand-edited value this
+# version no longer accepts), the restart below would fail and the rollback would remove gpu-tunerd
+# altogether: stop here instead, before any sudo. install.sh writes it 644, so no root is needed.
+if [[ $MODE == install && -e $ETC/config.json ]]; then
+    if [[ ! -r $ETC/config.json ]]; then
+        step "WARNING: $ETC/config.json is not readable by $(id -un), so it cannot be checked before the upgrade; gpu-tunerd checks it when it starts"
+    else
+        CFG_OK=1
+        CFG_WHY=$(/usr/bin/python3 -I -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+from gpu_tuner import daemon
+daemon.log = lambda msg: None
+try:
+    daemon.load_config(sys.argv[2])          # exactly what the new gpu-tunerd runs at start
+except SystemExit as e:                      # its refusal: sys.exit("gpu-tunerd: ...")
+    sys.exit(str(e.code))
+except (OSError, ValueError, RecursionError) as e:   # unreadable, not JSON, not UTF-8
+    sys.exit("gpu-tunerd: cannot load %s: %s: %s" % (sys.argv[2], type(e).__name__, e))
+' "$HERE" "$ETC/config.json" 2>&1) || CFG_OK=0
+        if [[ $CFG_OK -eq 0 ]]; then
+            die "the new gpu-tunerd would refuse the existing $ETC/config.json, so nothing was changed:
+  ${CFG_WHY:-(no reason given)}
+Fix that file (sudoedit $ETC/config.json; the page's Config files panel can check a draft), then run install.sh again."
+        fi
+        step "$ETC/config.json: the new gpu-tunerd accepts it"
+    fi
+fi
 
 # The code, root-owned, at the fixed path every mode shares (the daemon and remote pages run it).
 install_code() {

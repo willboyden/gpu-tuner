@@ -14,6 +14,7 @@
     <span id="conn" class="chip" role="status">Connecting…</span>
     <span class="grow"></span>
     <span id="meta" class="meta"></span>
+    <button id="help-open" class="ghost" type="button" aria-controls="help">Help</button>
     <button id="theme" class="ghost" type="button" aria-label="Switch between light and dark theme">Theme</button>
   </div>
 </header>
@@ -26,7 +27,9 @@
     <div class="table-wrap fleet-wrap"><table id="fleet-table"></table></div>
   </section>
 
-  <nav id="tabs" class="tabs" role="tablist" aria-label="Machines" hidden></nav>
+  <div id="tabs-row" class="tabs-row" hidden>
+    <nav id="tabs" class="tabs" role="tablist" aria-label="Machines"></nav>
+  </div>
 
   <div id="hosts"></div>
 
@@ -40,6 +43,34 @@
     </div>
     <div id="charts" class="chart-grid"></div>
     <div id="table" class="panel table-wrap" hidden></div>
+  </section>
+
+  <section id="help" class="panel help" aria-labelledby="help-h" tabindex="-1">
+    <h2 id="help-h">Help</h2>
+    <div class="seg help-tabs" role="tablist" aria-label="Help">
+      <button type="button" role="tab" id="help-tab-start" aria-controls="help-start" aria-selected="true">Getting started</button>
+      <button type="button" role="tab" id="help-tab-faq" aria-controls="help-faq" aria-selected="false" tabindex="-1">FAQ</button>
+    </div>
+    <div id="help-start" class="help-panel" role="tabpanel" aria-labelledby="help-tab-start" tabindex="0">
+      <p class="sub">Loading…</p>
+    </div>
+    <div id="help-faq" class="help-panel" role="tabpanel" aria-labelledby="help-tab-faq" tabindex="0" hidden>
+      <div class="row faq-search">
+        <label for="faq-q">Search the questions</label>
+        <input id="faq-q" type="search" autocomplete="off" spellcheck="false" aria-describedby="faq-count">
+        <span id="faq-count" class="sub" role="status"></span>
+      </div>
+      <div id="faq-list" class="faq"></div>
+    </div>
+  </section>
+
+  <section id="cfg" class="panel cfg" aria-labelledby="cfg-h">
+    <h2 id="cfg-h">Config files</h2>
+    <p class="sub">Draft <code>hosts.json</code> (the machines this page manages) or a machine's
+      <code>/etc/gpu-tuner/config.json</code>, check it with the same rules the page and the daemon apply when
+      they load it, then copy or download it and install it yourself with the commands shown. Nothing here
+      writes a file or changes a setting.</p>
+    <div id="cfg-root"><p class="sub">Loading…</p></div>
   </section>
 
   <section class="panel" aria-labelledby="ex-h">
@@ -71,5 +102,7 @@
   </section>
 </main>
 <script src="/app.js"></script>
+<script src="/help.js"></script>
+<script src="/config.js"></script>
 </body>
 </html>

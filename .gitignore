@@ -1,2 +1,4 @@
 __pycache__/
 *.pyc
+/hosts.json
+/config.json

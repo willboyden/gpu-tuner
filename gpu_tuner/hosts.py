@@ -6,7 +6,7 @@
       {"id": "local", "label": "Workstation",
        "wall": {"non_gpu_dc_w": 630, "psu_efficiency": 0.9, "circuits": {"15 A": 1440, "20 A": 1920}}},
       {"id": "gpu-box-2", "label": "GPU box 2", "ssh": "gpu-box-2"},
-      {"id": "edge-1", "ssh": "me@10.0.0.21", "port": 2222}
+      {"id": "edge-1", "ssh": "me@192.0.2.21", "port": 2222}
     ]}
 
   id     lowercase name used in the page's URL. "local" (and only "local") is this machine.
@@ -62,7 +62,10 @@ def default_hosts():
 
 
 def _num(v, lo, hi, what):
-    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or not lo <= v <= hi:
+    # An int is compared as an int: math.isfinite() would convert it to a float first, and a huge
+    # one (400 digits) raises OverflowError there instead of this file's normal error.
+    if isinstance(v, bool) or not isinstance(v, (int, float)) \
+            or (isinstance(v, float) and not math.isfinite(v)) or not lo <= v <= hi:
         raise HostsError(f"{what} must be a number from {lo} to {hi}")
     return v
 
@@ -142,6 +145,15 @@ def load_hosts(path=HOSTS_FILE):
         if st.st_mode & 0o022:
             raise HostsError("it must not be group- or world-writable (chmod 600)")
         data = f.read(MAX_FILE + 1)
+    return parse_hosts_text(data)
+
+
+def parse_hosts_text(data):
+    """The machines in a hosts.json's contents (bytes or str), with every rule load_hosts applies
+    except the file's own (owner, mode, symlink). The page's config builder validates drafts with
+    this, so a draft passes here exactly when the same text in the file would."""
+    if isinstance(data, str):
+        data = data.encode()
     if len(data) > MAX_FILE:
         raise HostsError(f"it is over {MAX_FILE} bytes")
     try:
@@ -217,7 +229,7 @@ def authorized_keys_line(pubkey, from_=None):
     opts = ["restrict"]
     if from_:
         if not FROM_RE.match(from_):
-            raise HostsError("--from must be addresses or patterns like 10.0.0.5 or 10.0.0.0/24")
+            raise HostsError("--from must be addresses or patterns like 192.0.2.5 or 192.0.2.0/24")
         opts.append(f'from="{from_}"')
     opts.append(f'command="{REMOTE_CMD}"')
     return f"{','.join(opts)} {parts[0]} {parts[1]} gpu-tuner-hub"

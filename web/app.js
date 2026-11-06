@@ -59,6 +59,121 @@ const S = { st: null, sel: null, views: new Map(), hist: null, win: 300, hoverT:
   });
 })();
 
+// ── (i) info pop-ups ─────────────────────────────────────────────────────────────────────────
+// One pop-up for the whole page, filled for the button that opened it. Its text comes from
+// /info.en.json (plain text: `x` is code, a blank line a new paragraph; never parsed as HTML),
+// plus optional live lines for this card or machine. Escape, a click outside or the button again
+// close it; focus goes back to the button. Positioned with CSSOM only (the CSP allows no inline
+// style attributes). Where the browser has the Popover API it opens in the top layer.
+const loadJSON = (() => {
+  const memo = new Map();
+  return url => {
+    if (!memo.has(url)) {
+      memo.set(url, fetch(url, { credentials: 'same-origin' })
+        .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+        .catch(e => { memo.delete(url); throw e; }));    // a failed load is retried next time
+    }
+    return memo.get(url);
+  };
+})();
+
+function richText(text) {
+  return String(text == null ? '' : text).split(/\n\s*\n/).filter(p => p.trim()).map(p =>
+    el('p', {}, ...p.split('`').map((t, i) => (i % 2 ? el('code', {}, t) : t)).filter(x => x !== '')));
+}
+
+const POP = { node: null, btn: null, seq: 0 };
+function popNode() {
+  if (POP.node) return POP.node;
+  const n = el('div', { class: 'info-pop', id: 'info-pop', role: 'dialog', 'aria-labelledby': 'info-pop-t', tabindex: -1, hidden: true });
+  POP.top = typeof n.showPopover === 'function';
+  if (POP.top) { n.setAttribute('popover', 'manual'); n.hidden = false; }
+  document.body.append(n);
+  POP.node = n;
+  return n;
+}
+const popOpen = () => !!POP.node && (POP.top ? POP.node.matches(':popover-open') : !POP.node.hidden);
+function placePop() {
+  const n = POP.node, b = POP.btn;
+  if (!b || !popOpen()) return;
+  const a = b.getBoundingClientRect(), vw = document.documentElement.clientWidth, vh = innerHeight, m = 8;
+  const w = Math.min(400, vw - 2 * m);
+  n.style.width = w + 'px';
+  n.style.maxHeight = Math.max(160, vh - 2 * m) + 'px';
+  const left = Math.min(Math.max(m, a.left - 12), vw - w - m), ph = n.offsetHeight;
+  const below = a.bottom + 6, above = a.top - 6 - ph;
+  const top = below + ph <= vh - m || above < m ? Math.min(below, Math.max(m, vh - m - ph)) : above;
+  n.style.left = left + 'px'; n.style.top = top + 'px';
+}
+function onPopKey(e) { if (e.key === 'Escape' && popOpen()) { e.preventDefault(); e.stopPropagation(); closePop(true); } }
+function onPopDown(e) {
+  if (popOpen() && !POP.node.contains(e.target) && POP.btn && !POP.btn.contains(e.target)) closePop(false);
+}
+function closePop(refocus) {
+  const b = POP.btn;
+  if (!b) return;
+  POP.btn = null;
+  b.setAttribute('aria-expanded', 'false');
+  if (POP.top) { if (POP.node.matches(':popover-open')) POP.node.hidePopover(); } else POP.node.hidden = true;
+  document.removeEventListener('keydown', onPopKey, true);
+  document.removeEventListener('pointerdown', onPopDown, true);
+  removeEventListener('resize', placePop);
+  removeEventListener('scroll', placePop, true);
+  if (refocus || POP.node.contains(document.activeElement) || document.activeElement === document.body) b.focus();
+}
+function fillPop(entry, opts, state) {
+  const n = popNode(), block = (h, text) => (text ? el('section', { class: 'ip-block' }, el('h4', {}, h), ...richText(text)) : null);
+  const title = (entry && entry.title) || opts.label;
+  const body = el('div', { class: 'ip-body' });
+  if (state === 'loading') body.append(el('p', { class: 'sub' }, 'Loading…'));
+  else if (!entry) body.append(el('p', { class: 'sub' }, 'The help text could not be loaded. Reload the page to try again.'));
+  else {
+    body.append(...[block('What it is', entry.what), block('What changing it does', entry.change),
+      block('Limits', entry.limits), block('When it takes effect', entry.effect)].filter(Boolean));
+  }
+  let live = [];
+  try { live = (opts.live && opts.live()) || []; } catch (e) { live = []; }
+  if (live.length) body.append(el('section', { class: 'ip-block ip-live' }, el('h4', {}, opts.liveTitle || 'Here, now'),
+    el('ul', {}, ...live.map(x => el('li', {}, x)))));
+  n.replaceChildren(el('div', { class: 'ip-head' }, el('h3', { id: 'info-pop-t' }, title),
+    el('button', { type: 'button', class: 'ghost small ip-close', 'aria-label': 'Close', onclick: () => closePop(true) }, '×')), body);
+}
+async function togglePop(btn, where, opts) {
+  if (POP.btn === btn) { closePop(true); return; }
+  closePop(false);
+  const n = popNode(), seq = ++POP.seq;
+  POP.btn = btn;
+  btn.setAttribute('aria-expanded', 'true');
+  btn.setAttribute('aria-controls', n.id);
+  fillPop(null, opts, 'loading');
+  if (POP.top) n.showPopover(); else n.hidden = false;
+  placePop();
+  document.addEventListener('keydown', onPopKey, true);
+  document.addEventListener('pointerdown', onPopDown, true);
+  addEventListener('resize', placePop);
+  addEventListener('scroll', placePop, true);
+  n.focus({ preventScroll: true });
+  let entry = null;
+  try { const doc = await loadJSON('/info.en.json'); entry = where(doc) || null; } catch (e) { entry = null; }
+  if (seq !== POP.seq || POP.btn !== btn) return;      // closed, or another one opened meanwhile
+  fillPop(entry, opts, entry ? 'ok' : 'failed');
+  placePop();
+}
+// key names an entry of `controls` in info.en.json; tests check every key used here has one.
+function info(key, label, live, liveTitle) {
+  const b = el('button', { type: 'button', class: 'info', 'aria-haspopup': 'dialog', 'aria-expanded': 'false',
+    'aria-label': `About ${label}`, title: `About ${label}` }, 'i');
+  b.addEventListener('click', () => togglePop(b, doc => doc.controls && doc.controls[key], { label, live, liveTitle }));
+  return b;
+}
+// The config builder's fields: an entry of `fields.<file>` in info.en.json.
+function fieldInfo(file, key, label) {
+  const b = el('button', { type: 'button', class: 'info', 'aria-haspopup': 'dialog', 'aria-expanded': 'false',
+    'aria-label': `About ${label}`, title: `About ${label}` }, 'i');
+  b.addEventListener('click', () => togglePop(b, doc => doc.fields && doc.fields[file] && doc.fields[file][key], { label }));
+  return b;
+}
+
 // ── api ──────────────────────────────────────────────────────────────────────────────────────
 async function getJSON(url) {
   const r = await fetch(url, { credentials: 'same-origin' });
@@ -273,12 +388,15 @@ class GpuCard {
     this.pOverride = el('button', { class: 'ghost small', type: 'button', hidden: true,
       onclick: () => this.applyPower(true) }, 'Apply anyway (exceeds budget)');
     this.pRevert = el('button', { class: 'ghost small', type: 'button', onclick: () => { this.pending.power = null; this.syncPower(); } }, 'Revert');
-    this.pField = el('fieldset', { class: 'ctl' }, el('legend', {}, 'Power limit'),
-      el('div', { class: 'row' }, this.pSlider, this.pNumber, el('span', {}, 'W')), this.pEnds, this.pPresets,
+    this.pPresetRow = el('div', { class: 'row' }, this.pPresets, info('power-presets', 'power presets',
+      () => this.livePresets(), 'This card'));
+    this.pField = el('fieldset', { class: 'ctl' }, el('legend', {}, 'Power limit ', info('power-limit', 'the power limit', () => this.livePower(), 'This card')),
+      el('div', { class: 'row' }, this.pSlider, this.pNumber, el('span', {}, 'W')), this.pEnds, this.pPresetRow,
       el('div', { class: 'actions' }, this.pApply, this.pOverride, this.pRevert, this.pMsg));
     return this.pField;
   }
   stagePower(v, typing) {
+    if (!this.hv.canEdit()) return;
     const d = this.d(), [lo, hi] = d.power_range;
     if (!Number.isFinite(v)) return;
     this.pKeep = false;             // a new value from you always gets a fresh preview
@@ -301,6 +419,7 @@ class GpuCard {
     const others = otherCards.reduce((a, g) => a + (g.settings.power_w || 0), 0);
     const total = others + val, budget = st.budget_w, over = budget != null && total > budget && val > applied;
     const presets = (d.profile ? d.profile.power_presets : []).filter(p => p.w >= lo && p.w <= hi);
+    this.pPresetRow.hidden = !presets.length;
     const pKey = JSON.stringify([presets, val]);
     if (pKey !== this.pKey) {
       this.pKey = pKey;
@@ -329,6 +448,21 @@ class GpuCard {
       else this.say(this.pMsg, '', note ? note.note : '');
     }
   }
+  livePower() {
+    const d = this.d(), st = this.hv.st();
+    if (!d || !d.power_range) return [];
+    const out = [`Settable ${d.power_range[0]}–${d.power_range[1]} W` +
+      (this.stat.power_default_w ? ` · factory default ${this.stat.power_default_w} W` : '') + ` · applied ${n0(d.settings.power_w)} W`,
+      d.profile ? `Profile: ${d.profile.label}` : 'No profile for this card: it can be lowered, and raised back to its factory default, never above it'];
+    if (st && st.budget_w != null) out.push(`Machine budget ${n0(st.budget_w)} W; all caps together ${n0(st.budget_used_w)} W`);
+    return out;
+  }
+  livePresets() {
+    const d = this.d();
+    if (!d || !d.profile || !d.power_range) return [];
+    const [lo, hi] = d.power_range;
+    return d.profile.power_presets.filter(p => p.w >= lo && p.w <= hi).map(p => `${p.label}: ${p.note}`);
+  }
   async applyPower(confirmOverride) {
     const watts = this.pending.power;
     const ok = await this.send({ op: 'set_power', uuid: this.uuid, watts, confirm_override: !!confirmOverride }, this.pMsg, 'power',
@@ -344,22 +478,43 @@ class GpuCard {
     this.editor = new CurveEditor(this, curve => this.stageFan({ curve }));
     this.fPresets = el('div', { class: 'row' });
     this.fPoints = el('div', { class: 'points' });
-    this.fCurveBox = el('div', {}, this.editor.svg, this.fPoints, this.fPresets,
-      el('div', { class: 'sub' }, 'Drag a point, or focus it and use the arrow keys. Double-click the plot to add a point, a point to remove it. The last point stays at 100%.'));
+    this.fCurveBox = el('div', {}, this.editor.svg, this.fPoints,
+      el('div', { class: 'row' }, this.fPresets, info('fan-presets', 'fan curve presets', () => this.liveFanPresets(), 'This card')),
+      el('div', { class: 'row hint' }, el('span', { class: 'sub' }, 'Drag a point, or focus it and use the arrow keys. Double-click the plot to add a point, a point to remove it. The last point stays at 100%.'),
+        info('fan-curve', 'the fan curve', () => this.liveCurve(), 'This card')));
     this.fSlider = el('input', { type: 'range', step: 1, max: 100, 'aria-label': 'Fixed fan speed in percent', oninput: e => this.stageFan({ manual_pct: +e.target.value }) });
     this.fPct = el('b');
-    this.fManualBox = el('div', {}, el('div', { class: 'row' }, this.fSlider, this.fPct),
+    this.fManualBox = el('div', {}, el('div', { class: 'row' }, this.fSlider, this.fPct,
+      info('fan-manual', 'the fixed fan speed', () => { const d = this.d(); return d ? [`Fixed speed ${d.fan_min}–100%`] : []; }, 'This card')),
       el('div', { class: 'sub' }, 'A fixed speed still rises with temperature once the safety floor passes it, so it cannot cook the card.'));
-    this.fAutoBox = el('div', { class: 'sub' }, 'Hands the fans back to the driver’s own curve. It is safe but usually lazy: on the cards this was built on it ran 7–11 °C hotter under load than a cooling-first curve, which cost 4–8% of clock.');
+    this.fAutoBox = el('div', { class: 'row hint' }, el('span', { class: 'sub' }, 'Hands the fans back to the driver’s own curve. It is safe but usually lazy: on the cards this was built on it ran 7–11 °C hotter under load than a cooling-first curve, which cost 4–8% of clock.'),
+      info('fan-auto', 'the driver default'));
     this.fState = el('div', { class: 'row' });
     this.fMsg = el('div', { class: 'msg' });
     this.fApply = el('button', { class: 'primary', type: 'button', onclick: () => this.applyFan() }, 'Apply fan settings');
     this.fRevert = el('button', { class: 'ghost small', type: 'button', onclick: () => { this.pending.fan = null; this.syncFan(); } }, 'Revert');
-    this.fField = el('fieldset', { class: 'ctl' }, el('legend', {}, 'Fans'), this.fModes, this.fState,
+    this.fField = el('fieldset', { class: 'ctl' }, el('legend', {}, 'Fans'),
+      el('div', { class: 'row' }, this.fModes, info('fan-mode', 'the fan mode', () => this.liveFan(), 'This card')), this.fState,
       this.fCurveBox, this.fManualBox, this.fAutoBox, el('div', { class: 'actions' }, this.fApply, this.fRevert, this.fMsg));
     return this.fField;
   }
   fanValue() { return this.pending.fan || this.d().settings.fan; }
+  liveFan() {
+    const d = this.d();
+    if (!d) return [];
+    const mode = { curve: 'curve', manual: 'fixed speed', auto: 'driver default', unmanaged: 'not managed here' }[d.settings.fan.mode];
+    return [`Fans at 100% by ${d.full_by_c} °C whatever the mode`, `Fan minimum ${d.fan_min}%`, `Mode in force: ${mode}`];
+  }
+  liveCurve() {
+    const d = this.d(), st = this.hv.st();
+    if (!d || !st) return [];
+    return [`Temperatures ${st.curve_temp_min_c}–${d.full_by_c} °C`, `Speeds ${d.fan_min}–100%`, `Up to ${st.curve_max_points} points`];
+  }
+  liveFanPresets() {
+    const d = this.d(), st = this.hv.st();
+    if (!d || !st) return [];
+    return Object.values(st.curve_presets).filter(p => p.curve[p.curve.length - 1][0] <= d.full_by_c).map(p => `${p.label}: ${p.note}`);
+  }
   stageFan(patch) {
     if (!this.hv.canEdit()) return;
     this.fKeep = false;
@@ -410,7 +565,11 @@ class GpuCard {
     this.cMsg = el('div', { class: 'msg' });
     this.cApply = el('button', { class: 'primary', type: 'button', onclick: () => this.applyClock() }, 'Apply clock cap');
     this.cRevert = el('button', { class: 'ghost small', type: 'button', onclick: () => { this.pending.clock = null; this.syncClock(); } }, 'Revert');
-    this.cField = el('fieldset', { class: 'ctl' }, el('legend', {}, 'Core clock cap'),
+    this.cField = el('fieldset', { class: 'ctl' }, el('legend', {}, 'Core clock cap ', info('clock-cap', 'the core clock cap', () => {
+      const d = this.d();
+      return d && d.clock_range ? [`Cap ${n0(d.clock_range[0])}–${n0(d.clock_range[1])} MHz`,
+        d.settings.clock_cap_mhz != null ? `In force: ${n0(d.settings.clock_cap_mhz)} MHz` : 'In force: no cap'] : [];
+    }, 'This card')),
       el('label', { class: 'check' }, this.cOn, 'Cap the maximum core clock'),
       el('div', { class: 'row' }, this.cSlider, this.cVal),
       el('div', { class: 'sub' }, 'A cap can only slow the card, never push it. It is mostly useful for memory-bound decode, where the core clocks high for little gain; for everything else the power limit is the better lever. Off by default.'),
@@ -422,6 +581,7 @@ class GpuCard {
     return this.pending.clock || { on: cap != null, mhz: cap != null ? cap : (d.clock_range ? d.clock_range[1] : 0) };
   }
   stageClock(patch) {
+    if (!this.hv.canEdit()) return;
     this.cKeep = false;
     const d = this.d(), next = Object.assign({}, this.clockValue(), patch), cap = d.settings.clock_cap_mhz;
     const asApplied = next.on ? next.mhz === cap : cap == null;
@@ -457,7 +617,10 @@ class GpuCard {
         this.sync();
       }
     } });
-    this.bRow = el('div', { class: 'actions' }, this.bBtn, this.bMsg);
+    this.bRow = el('div', { class: 'actions' }, this.bBtn, info('baseline', 'the lab baseline', () => {
+      const d = this.d();
+      return d && d.baseline_power_w != null ? [`Baseline power here: ${d.baseline_power_w} W`] : [];
+    }, 'This card'), this.bMsg);
     return this.bRow;
   }
 
@@ -485,9 +648,14 @@ class GpuCard {
   sync() {
     if (!this.d()) return;
     const edit = this.hv.canEdit();
-    for (const f of [this.pField, this.fField, this.cField]) f.disabled = !edit;
+    // Locked controls are disabled one by one rather than through fieldset.disabled, which would
+    // also disable the (i) buttons inside: their explanations matter most on a locked card.
+    const ctls = () => [this.pField, this.fField, this.cField].flatMap(f => [...f.querySelectorAll('input, select, textarea, button:not(.info)')]);
+    for (const c of ctls()) c.disabled = false;
+    for (const f of [this.pField, this.fField, this.cField]) f.classList.toggle('locked', !edit);
     this.bBtn.disabled = !edit || this.busy;
     this.syncPower(); this.syncFan(); this.syncClock();
+    if (!edit) for (const c of ctls()) c.disabled = true;
     const d = this.d(), missing = [];
     if (!d.power_range) missing.push('power limit');
     if (!this.stat.nfans) missing.push('fan control');
@@ -603,7 +771,7 @@ class BudgetPanel {
       el('div', {}, el('dt', {}, 'Against a wall circuit'), this.circuit)];
     this.note = el('p', { class: 'note' });
     this.root = el('section', { class: 'panel budget' },
-      el('h2', {}, 'Power budget'),
+      el('h2', {}, 'Power budget ', info('budget', 'the power budget', () => this.live(), 'This machine')),
       el('div', { class: 'budget-row' },
         el('div', { class: 'budget-main' },
           el('div', { class: 'hero' }, this.used, el('span', { class: 'hero-unit' }, ' W capped')),
@@ -611,6 +779,13 @@ class BudgetPanel {
           el('div', { class: 'row' }, this.input, el('span', {}, 'W'), this.applyBtn, this.msg)),
         el('dl', { class: 'facts' }, el('div', {}, el('dt', {}, 'Drawing now'), this.draw), ...this.wallRows)),
       this.note);
+  }
+  live() {
+    const st = this.hv.st();
+    if (!st) return [];
+    const hw = st.gpus.reduce((a, g) => a + (g.power_range ? g.power_range[1] : 0), 0);
+    return [st.budget_w != null ? `Budget ${n0(st.budget_w)} W` : 'No budget set', `All caps together ${n0(st.budget_used_w)} W`,
+      `Highest budget the daemon accepts here: ${n0(hw)} W (every card at its own maximum)`];
   }
   async setBudget() {
     const watts = Math.round(Number(this.input.value));
@@ -793,8 +968,8 @@ function renderFleet() {
 
 function renderTabs() {
   const nav = $('#tabs');
-  nav.hidden = !multi();
-  if (nav.hidden) return;
+  $('#tabs-row').hidden = !multi();
+  if (!multi()) return;
   const key = JSON.stringify([S.sel, S.st.hosts.map(h => [h.id, h.label, linkChip(h)[0]])]);
   if (key === S.tabKey) return;
   S.tabKey = key;
@@ -975,6 +1150,10 @@ function renderTable() {
 
 // ── page ─────────────────────────────────────────────────────────────────────────────────────
 function buildOnce() {
+  $('#fleet-h').append(' ', info('machines', 'the machines table', () => [`${S.st.hosts.length} machines`,
+    `${S.st.hosts.filter(h => h.conn === 'up').length} connected now`], 'Now'));
+  $('#tabs-row').append(info('machine-tabs', 'the machine tabs'));
+  $('#hist-h').after(info('history', 'the history charts'));
   S.charts = CHARTS.map(d => new Chart(d));
   $('#charts').replaceChildren(...S.charts.map(c => c.root));
   const label = s => (s < 3600 ? `${s / 60} min` : `${s / 3600} h`);

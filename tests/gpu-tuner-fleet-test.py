@@ -119,7 +119,7 @@ EXAMPLE = {"hosts": [
     {"id": "local", "label": "Workstation",
      "wall": {"non_gpu_dc_w": 630, "psu_efficiency": 0.9, "circuits": {"15 A": 1440, "20 A": 1920}}},
     {"id": "gpu-box-2", "label": "GPU box 2", "ssh": "gpu-box-2"},
-    {"id": "edge-1", "ssh": "me@10.0.0.21", "port": 2222},
+    {"id": "edge-1", "ssh": "me@192.0.2.21", "port": 2222},
 ]}
 
 
@@ -128,7 +128,7 @@ class Hosts(unittest.TestCase):
         hs = hosts.parse_hosts(EXAMPLE)
         self.assertEqual([h["id"] for h in hs], ["local", "gpu-box-2", "edge-1"])
         self.assertIsNone(hs[0]["ssh"])
-        self.assertEqual((hs[2]["ssh"], hs[2]["port"], hs[2]["label"]), ("me@10.0.0.21", 2222, "edge-1"))
+        self.assertEqual((hs[2]["ssh"], hs[2]["port"], hs[2]["label"]), ("me@192.0.2.21", 2222, "edge-1"))
         self.assertEqual(hs[0]["wall"]["circuits"]["15 A"], 1440)
 
     def test_ssh_destinations_that_could_inject_are_refused(self):
@@ -230,11 +230,11 @@ class Hosts(unittest.TestCase):
 
     def test_restricted_key_line(self):
         pub = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleExampleExampleExampleExample0001 me@laptop\n"
-        line = hosts.authorized_keys_line(pub, "10.0.0.5")
-        self.assertEqual(line, 'restrict,from="10.0.0.5",command="/usr/local/lib/gpu-tuner/gpu-tuner node --stdio" '
+        line = hosts.authorized_keys_line(pub, "192.0.2.5")
+        self.assertEqual(line, 'restrict,from="192.0.2.5",command="/usr/local/lib/gpu-tuner/gpu-tuner node --stdio" '
                                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleExampleExampleExampleExample0001 gpu-tuner-hub")
         self.assertTrue(hosts.authorized_keys_line(pub).startswith('restrict,command="'))
-        for bad_from in ('10.0.0.5" ,command="x', "a b"):
+        for bad_from in ('192.0.2.5" ,command="x', "a b"):
             with self.assertRaises(hosts.HostsError):
                 hosts.authorized_keys_line(pub, bad_from)
         for bad_pub in ("not a key", 'ssh-ed25519 AAAA"x', "ssh-rsa", 'ssh-ed25519"x AAAA', "ssh- AAAA"):

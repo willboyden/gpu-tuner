@@ -22,12 +22,13 @@ import secrets
 import socket
 import subprocess
 import sys
+import threading
 import time
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
-from . import __version__, hosts, hub, proto
+from . import __version__, configcheck, hosts, hub, proto
 from .daemon import DEFAULT_SOCKET
 from .nvml import REASONS
 
@@ -38,7 +39,17 @@ NONCE_RE = re.compile(r"^[A-Za-z0-9_-]{32,64}$")
 WEB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
           "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+          "/help.js": ("help.js", "text/javascript; charset=utf-8"),
+          "/config.js": ("config.js", "text/javascript; charset=utf-8"),
+          "/help.en.json": ("help.en.json", "application/json"),
+          "/info.en.json": ("info.en.json", "application/json"),
           "/style.css": ("style.css", "text/css; charset=utf-8")}
+APPLY_MAX_BODY = 16384
+# /api/validate-config carries a whole draft file as a JSON string: the loader's own 64 KiB cap,
+# plus room for JSON escaping. It reads, parses and answers; it never writes or runs anything.
+VALIDATE_MAX_BODY = 2 * configcheck.MAX_TEXT + 1024
+VALIDATE_SLOTS = 2                    # parsing is cheap, but a local process must not pin every thread
+BODY_DEADLINE_S = 10                  # a whole request body, not each recv: a trickle can't hold a thread
 
 
 def config_dir():
@@ -104,11 +115,33 @@ def state_json(h: hub.Hub, demo=False):
     return out
 
 
-def make_handler(h: hub.Hub, token: str, port: int, cookie: str = COOKIE, demo: bool = False):
+def _tilde(path):
+    home = os.path.expanduser("~")
+    return "~" + path[len(home):] if path == home or path.startswith(home + os.sep) else path
+
+
+def config_json(h: hub.Hub, demo=False, hosts_from_file=False, hosts_path=None):
+    """GET /api/config: what the config builder may load. Read-only, and nothing secret: the hosts
+    the page is running with (already validated at startup, re-serialized from the parsed objects),
+    the shipped example, and a config.json template from the daemon's own defaults. See
+    configcheck's docstring for why each is safe; demo mode reads nothing real."""
+    uid = configcheck.DEMO_UID if demo else os.getuid()
+    return {"demo": demo,
+            "hosts": {"path": "~/.config/gpu-tuner/hosts.json" if demo else _tilde(hosts_path or hosts.HOSTS_FILE),
+                      "from_file": bool(hosts_from_file and not demo),
+                      "running": configcheck.hosts_doc(h.hosts), "example": configcheck.example_doc()},
+            "config": {"path": "/etc/gpu-tuner/config.json", "template": configcheck.config_template(uid)}}
+
+
+def make_handler(h: hub.Hub, token: str, port: int, cookie: str = COOKIE, demo: bool = False,
+                 hosts_from_file: bool = False, hosts_path: str = None):
     """The page's request handler. `cookie` names the session cookie: demo mode uses its own, so
-    signing in to a demo never replaces the real page's cookie (cookies ignore the port)."""
+    signing in to a demo never replaces the real page's cookie (cookies ignore the port).
+    hosts_from_file/hosts_path only describe where the page's machine list came from, for the
+    config builder; nothing here reads that file again."""
     allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
     origins = {f"http://{x}" for x in allowed_hosts}
+    validate_slots = threading.BoundedSemaphore(VALIDATE_SLOTS)
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "gpu-tuner"
@@ -128,6 +161,8 @@ def make_handler(h: hub.Hub, token: str, port: int, cookie: str = COOKIE, demo: 
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("X-Frame-Options", "DENY")
             self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+            self.send_header("Cross-Origin-Opener-Policy", "same-origin")
             self.send_header("Content-Security-Policy",
                              "default-src 'none'; script-src 'self'; style-src 'self'; "
                              "connect-src 'self'; img-src 'self' data:; base-uri 'none'; "
@@ -144,7 +179,56 @@ def make_handler(h: hub.Hub, token: str, port: int, cookie: str = COOKIE, demo: 
             except cookies.CookieError:
                 return False
             got = jar.get(cookie)
-            return got is not None and hmac.compare_digest(got.value, token)
+            # Bytes, not str: compare_digest raises TypeError on a non-ASCII str, and a quoted
+            # cookie can carry one ("\xe9" decoded from the header's latin-1), which dropped the
+            # connection instead of answering 401. surrogatepass: no str fails to encode.
+            return got is not None and hmac.compare_digest(got.value.encode("utf-8", "surrogatepass"),
+                                                           token.encode("utf-8", "surrogatepass"))
+
+        def _read_body(self, length):
+            """Exactly `length` bytes within BODY_DEADLINE_S overall, or None (too slow, or the
+            client went away). The class timeout alone is per recv, so a byte every few seconds
+            would hold this thread for as long as the client liked."""
+            deadline = time.monotonic() + BODY_DEADLINE_S
+            chunks, got = [], 0
+            try:
+                while got < length:
+                    left = deadline - time.monotonic()
+                    if left <= 0:
+                        return None
+                    self.connection.settimeout(left)
+                    chunk = self.rfile.read1(length - got)
+                    if not chunk:
+                        return None
+                    chunks.append(chunk)
+                    got += len(chunk)
+            except OSError:                   # includes the socket timeout
+                return None
+            finally:
+                try:
+                    self.connection.settimeout(self.timeout)
+                except OSError:
+                    pass
+            return b"".join(chunks)
+
+        def _body(self, max_len):
+            """The request body, or None after answering (400 bad length, 408 too slow)."""
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = -1
+            if not 0 < length <= max_len:
+                self._send(400, {"ok": False, "error": "bad request: bad length"})
+                return None
+            data = self._read_body(length)
+            if data is None:
+                self.close_connection = True
+                try:
+                    self._send(408, {"ok": False, "error": "the request body did not arrive in time"})
+                except OSError:
+                    pass
+                return None
+            return data
 
         def _gate(self):
             if self.headers.get("Host") not in allowed_hosts:
@@ -172,10 +256,20 @@ def make_handler(h: hub.Hub, token: str, port: int, cookie: str = COOKIE, demo: 
                 return
             if url.path in STATIC:
                 name, ctype = STATIC[url.path]
-                with open(os.path.join(WEB, name), "rb") as f:
-                    self._send(200, f.read(), ctype)
+                try:
+                    with open(os.path.join(WEB, name), "rb") as f:
+                        data = f.read()
+                except FileNotFoundError:     # an incomplete install: say so, don't drop the connection
+                    self._send(404, {"error": "not found"})
+                    return
+                except OSError:
+                    self._send(500, {"error": "cannot read that file"})
+                    return
+                self._send(200, data, ctype)
             elif url.path == "/api/state":
                 self._send(200, state_json(h, demo))
+            elif url.path == "/api/config":
+                self._send(200, config_json(h, demo, hosts_from_file, hosts_path))
             elif url.path == "/api/history":
                 try:
                     window = int(qs.get("window", ["300"])[0])
@@ -198,17 +292,21 @@ def make_handler(h: hub.Hub, token: str, port: int, cookie: str = COOKIE, demo: 
             if self.headers.get("Origin") not in origins:
                 self._send(403, {"error": "cross-origin request refused"})
                 return
-            if urlsplit(self.path).path != "/api/apply":
+            path = urlsplit(self.path).path
+            if path not in ("/api/apply", "/api/validate-config"):
                 self._send(404, {"error": "not found"})
                 return
             if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
                 self._send(415, {"error": "application/json only"})
                 return
+            if path == "/api/validate-config":
+                self._validate()
+                return
+            body = self._body(APPLY_MAX_BODY)
+            if body is None:
+                return
             try:
-                length = int(self.headers.get("Content-Length", "0"))
-                if not 0 < length <= 16384:
-                    raise ValueError("bad length")
-                req = proto.decode_line(self.rfile.read(length))
+                req = proto.decode_line(body)
                 if req.get("op") not in proto.APPLY_OPS:
                     raise ValueError("unknown op")
                 # Which machine: required once there is more than one; never inferred from a GPU UUID.
@@ -222,6 +320,39 @@ def make_handler(h: hub.Hub, token: str, port: int, cookie: str = COOKIE, demo: 
                 return
             code, resp = h.apply(hid, {k: req[k] for k in proto.APPLY_KEYS if k in req})
             self._send(code, resp)
+
+        def _validate(self):
+            """POST /api/validate-config {"kind": "hosts"|"config", "text": "..."}: the real loaders'
+            rules on a draft. Reads the body, parses, answers. It reads no file contents and writes
+            none, and involves no socket, daemon op or subprocess, so it cannot change anything
+            anywhere. (The only file it looks at is whether the page's ssh key EXISTS, for a hint.)
+
+            The body is read first, under an overall deadline, and a slot is taken only for parsing:
+            a slow client holds its own thread, never one of the slots."""
+            body = self._body(VALIDATE_MAX_BODY)
+            if body is None:
+                return
+            if not validate_slots.acquire(blocking=False):
+                self._send(429, {"ok": False, "error": "busy: try again in a moment"})
+                return
+            try:
+                try:
+                    req = proto.decode_line(body)
+                    if set(req) != {"kind", "text"}:
+                        raise ValueError('send exactly {"kind", "text"}')
+                    resp = configcheck.check(req["kind"], req["text"], demo=demo,
+                                             page_uid=None if demo else os.getuid())
+                except ValueError as e:
+                    self._send(400, {"ok": False, "error": f"bad request: {e}"})
+                    return
+                except Exception as e:        # a checker bug: answer, never drop the connection
+                    # Only the exception's type is logged: its message could quote the draft.
+                    sys.stderr.write(f"gpu-tuner: validate-config failed: {type(e).__name__}\n")
+                    self._send(500, {"ok": False, "error": "internal error"})
+                    return
+                self._send(200, resp)
+            finally:
+                validate_slots.release()
 
     return Handler
 
@@ -251,7 +382,9 @@ def cmd_serve(args):
     h = hub.Hub(machines, lambda m: make_link(m, args.socket))
     h.start()
     try:
-        httpd = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(h, token, args.port))
+        httpd = ThreadingHTTPServer(("127.0.0.1", args.port),
+                                    make_handler(h, token, args.port, hosts_from_file=os.path.isfile(args.hosts),
+                                                 hosts_path=os.path.abspath(args.hosts)))
     except OSError as e:
         h.stop()
         sys.exit(f"gpu-tuner: cannot listen on 127.0.0.1:{args.port}: {e}")

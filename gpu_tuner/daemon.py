@@ -67,32 +67,57 @@ def sd_notify(msg):
         pass
 
 
-def load_config(path):
-    cfg = {"allowed_uid": None, "gpu_budget_w": safety.DEFAULT_GPU_BUDGET_W, "interval_s": 2.0}
-    try:
-        with open(path) as f:
-            raw = json.load(f)
-    except FileNotFoundError:
-        log(f"config {path} not found: defaults (root-only socket, {cfg['gpu_budget_w']} W budget)")
-        return cfg
+DEFAULT_INTERVAL_S = 2.0
+CONFIG_KEYS = ("allowed_uid", "gpu_budget_w", "interval_s")
+MAX_UID = 2**32 - 2         # uid_t is 32 bits and 4294967295 ((uid_t)-1) means "leave unchanged" to chown
+
+
+class ConfigError(ValueError):
+    """config.json holds a value the daemon refuses to start with."""
+
+
+def default_config():
+    return {"allowed_uid": None, "gpu_budget_w": safety.DEFAULT_GPU_BUDGET_W, "interval_s": DEFAULT_INTERVAL_S}
+
+
+def parse_config(raw, where=DEFAULT_CONFIG):
+    """config.json's parsed contents -> the settings the daemon runs with, or ConfigError. Pure, no
+    I/O: load_config uses it at startup and the page's config builder uses it to check a draft, so
+    both apply exactly the same rules. Keys other than CONFIG_KEYS are ignored."""
+    cfg = default_config()
     if not isinstance(raw, dict):
-        sys.exit(f"gpu-tunerd: {path} must be a JSON object")
+        raise ConfigError(f"{where} must be a JSON object")
     uid, budget, interval = raw.get("allowed_uid"), raw.get("gpu_budget_w"), raw.get("interval_s")
     if "gpu_budget_w" in raw and budget is None:
         cfg["gpu_budget_w"] = None    # explicit null: no card here has a settable cap (e.g. GB10)
     if uid is not None:
-        if isinstance(uid, bool) or not isinstance(uid, int) or uid < 0:
-            sys.exit(f"gpu-tunerd: allowed_uid in {path} must be a uid")
+        if isinstance(uid, bool) or not isinstance(uid, int) or not 0 <= uid <= MAX_UID:
+            raise ConfigError(f"allowed_uid in {where} must be a uid (0-{MAX_UID})")
         cfg["allowed_uid"] = uid
     if budget is not None:
-        if isinstance(budget, bool) or not isinstance(budget, int) or budget <= 0:
-            sys.exit(f"gpu-tunerd: gpu_budget_w in {path} must be a positive whole number of watts")
+        if isinstance(budget, bool) or not isinstance(budget, int) or not 0 < budget <= safety.MAX_GPU_BUDGET_W:
+            raise ConfigError(f"gpu_budget_w in {where} must be a whole number of watts from 1 to "
+                              f"{safety.MAX_GPU_BUDGET_W}")
         cfg["gpu_budget_w"] = budget
     if interval is not None:
         if isinstance(interval, bool) or not isinstance(interval, (int, float)) or not 1 <= interval <= 10:
-            sys.exit(f"gpu-tunerd: interval_s in {path} must be 1-10")
+            raise ConfigError(f"interval_s in {where} must be 1-10")
         cfg["interval_s"] = float(interval)
     return cfg
+
+
+def load_config(path):
+    try:
+        with open(path) as f:
+            raw = json.load(f)
+    except FileNotFoundError:
+        cfg = default_config()
+        log(f"config {path} not found: defaults (root-only socket, {cfg['gpu_budget_w']} W budget)")
+        return cfg
+    try:
+        return parse_config(raw, path)
+    except ConfigError as e:
+        sys.exit(f"gpu-tunerd: {e}")
 
 
 def save_config(path, cfg):
@@ -382,6 +407,8 @@ class Daemon:
             raise safety.SafetyError(
                 f"{watts} W is above {hw_max} W, the sum of every card's own hardware maximum — "
                 f"a budget above that can never actually bind on anything")
+        if watts > safety.MAX_GPU_BUDGET_W:    # parse_config's ceiling: the saved file must load again
+            raise safety.SafetyError(f"the GPU budget must be at most {safety.MAX_GPU_BUDGET_W} W")
         self.budget = watts
         self.cfg["gpu_budget_w"] = watts
         save_config(self.config_path, self.cfg)

@@ -1,0 +1,108 @@
+{
+  "_about": "Getting started and FAQ for the page's Help panel. Plain text: `backticks` mark code, a blank line starts a paragraph; nothing here is parsed as HTML. `cmd` is shown as a command to copy. Keep it accurate to the code and the README; tests/gpu-tuner-help-test.py checks the shape.",
+  "getting_started": {
+    "lead": "gpu-tuner shows every NVIDIA card on one or more machines live and lets you change the three things that are safe to change on any card: its power limit, its fans and a core clock cap. Each machine's own root daemon checks every change against fixed limits, so nothing on this page can widen them.",
+    "steps": [
+      {
+        "title": "Try it first, with no GPU",
+        "body": "Demo mode serves this same page over three made-up machines. Every change goes through the same checks as on real hardware and lands on a simulated card; it never loads the NVIDIA library, never runs ssh and needs no root. It uses its own port (8766) and its own sign-in, so it can run beside a real page.",
+        "cmd": "./gpu-tuner serve --demo        # then, in a second terminal: ./gpu-tuner open --demo"
+      },
+      {
+        "title": "Install on the machine you sit at",
+        "body": "Run `install.sh` as yourself, not with sudo: it asks for sudo itself, installs the root daemon `gpu-tunerd` and this page as a user service, and takes over the power limits already in force. `--dry-run` prints every privileged step and changes nothing. Without the install, `./gpu-tuner serve` runs the page monitor-only: every reading is live and the controls are locked.",
+        "cmd": "./install.sh --dry-run && ./install.sh && ./gpu-tuner open"
+      },
+      {
+        "title": "Read a card",
+        "body": "Each card shows temperature, fan, power draw against its cap, utilization, memory, core clock and what is limiting the clock. Power cap under sustained load is normal: the cap sets the clock. A red chip means the card is at its thermal limit, has a fan fault or reports uncorrected memory errors. Every control has an (i) button that explains it."
+      },
+      {
+        "title": "Set a power limit",
+        "body": "Move the slider, type a number or pick a preset, then Apply power limit. The daemon checks the card's own range and the machine's power budget, writes the limit and reads it back. Raising past the budget asks you to confirm; lowering is always allowed."
+      },
+      {
+        "title": "Pick a fan curve",
+        "body": "Choose a preset or drag the points, then Apply fan settings. Whatever you draw, the fans never run below the shaded safety floor, which reaches 100% at 10 °C under the card's own slowdown temperature. Driver default hands the fans back to the driver's own curve."
+      },
+      {
+        "title": "Add other machines (optional)",
+        "body": "On each other machine run `./install.sh --no-ui` (control) or `./install.sh --node` (watch only). On this one, create the page's own restricted ssh key and add the line it prints to `authorized_keys` on each machine, then list the machines in `~/.config/gpu-tuner/hosts.json`. The Config files panel below drafts and checks that file and shows the commands to install it.",
+        "cmd": "./gpu-tuner hosts --init-key --from 192.0.2.5     # this machine's address, as the others see it"
+      },
+      {
+        "title": "Undo",
+        "body": "Reset to lab baseline puts one card back to the lab fan curve, no clock cap and its baseline power. `./install.sh --uninstall` removes the services and hands the fans back to the driver; power limits stay as they are."
+      }
+    ]
+  },
+  "faq": [
+    {
+      "q": "Can a wrong value here damage a card?",
+      "a": "The page validates nothing itself: each machine's root daemon checks every request against `gpu_tuner/safety.py` in a root-owned copy the page cannot change. Power stays inside the card's own range (narrowed further by a known profile), fans never go under the safety floor, and a clock cap can only slow a card. Changes that cannot be made safe by clamping, such as overclock offsets, are not offered at all."
+    },
+    {
+      "q": "Why is a control missing or greyed out?",
+      "a": "A control the driver does not offer on a card (a power limit or fans on a GB10, for example) is not shown, with a line saying so. Controls are locked when the machine has no `gpu-tunerd` (monitor-only: the banner shows the install command), or when its link is down. Apply buttons also wait while a change to that card is being applied."
+    },
+    {
+      "q": "What happens if gpu-tunerd stops or crashes?",
+      "a": "Every fan goes back to the driver's own curve: on a normal stop, on a crash (the service's stop hook) and on a hung loop (the systemd watchdog). Power limits are left in place on purpose, so stopping the service never uncaps a card. When it starts again it re-applies the saved settings."
+    },
+    {
+      "q": "Why can I not raise my card above its factory default?",
+      "a": "Only cards with a hand-measured profile in `safety.py` may go above their factory default, and only up to the profile's maximum. Any other card can be lowered, and raised back up to its default, until someone adds a profile for it."
+    },
+    {
+      "q": "What is the power budget, and why is it per machine?",
+      "a": "It caps the sum of the power limits of all cards in one machine, because they share one power supply and one wall circuit. Each card's own maximum is not the machine's safe maximum. Machines have separate budgets since they sit on separate circuits. It is a soft limit: the page shows the numbers and asks you to confirm before exceeding it."
+    },
+    {
+      "q": "Why are my fans faster than the curve I drew?",
+      "a": "Either the safety floor is above your curve at the current temperature (the card shows The safety floor is setting the speed right now), or the fans are coming down slowly on purpose: they speed up at once but slow down only after the card has cooled 2 °C."
+    },
+    {
+      "q": "Why are overclocking, undervolting and temperature targets not offered?",
+      "a": "No range of clock offsets is known to be stable on arbitrary hardware, and on an inference or training box an unstable one shows up as quietly wrong results before it crashes. Thermal limits and temperature targets are not supported on most cards. The list at the bottom of the page, Left out on purpose, has the full reasoning."
+    },
+    {
+      "q": "Can this page edit hosts.json or config.json for me?",
+      "a": "No, on purpose. The Config files panel drafts a file, checks it with the same rules the page and the daemon use when they load it, and gives you the text and the exact commands to install it. Nothing in the browser can write either file: hosts.json decides what the page runs ssh against, and config.json belongs to the root daemon. The one setting the page does change, the power budget, goes through the daemon like any other change."
+    },
+    {
+      "q": "How do I change which user may use the daemon, or how often it checks temperatures?",
+      "a": "Both live in `/etc/gpu-tuner/config.json` on that machine (`allowed_uid` and `interval_s`). Draft the file in Config files, then install it with sudo on that machine and restart the daemon; the panel prints the commands.",
+      "cmd": "sudo systemctl restart gpu-tunerd"
+    },
+    {
+      "q": "The page says Signed out. How do I sign in again?",
+      "a": "Run `gpu-tuner open` (or use the app launcher). It opens a single-use sign-in link that expires after 60 seconds and sets a session cookie; the secret itself never appears in a URL or a log.",
+      "cmd": "./gpu-tuner open"
+    },
+    {
+      "q": "Does the page talk to the network?",
+      "a": "It listens on `127.0.0.1` only. Other machines are reached over ssh with the page's own key, which `authorized_keys` restricts to one fixed command with no shell and no forwarding. Nothing new listens on any machine's network."
+    },
+    {
+      "q": "A machine shows Unreachable. What now?",
+      "a": "Its tab says why (for example ssh refused the login, or the host key is unknown or changed) and when the page will retry. Its controls are locked and whatever was last applied there stays in force. `./gpu-tuner hosts --check` connects to every listed machine once and says exactly what is wrong.",
+      "cmd": "./gpu-tuner hosts --check"
+    },
+    {
+      "q": "A change timed out. Did it apply?",
+      "a": "It may or may not have: the page says so and never retries a change for you. Watch the card's readings, or check that machine's daemon log with `journalctl -u gpu-tunerd`, which records every request."
+    },
+    {
+      "q": "Why does a DGX Spark (GB10) show no controls?",
+      "a": "On a GB10 the driver reports no power limit, no fans and no clock list: firmware manages the whole chip. The page shows its readings, including the SoC temperature (the hottest of the chip's thermal zones, usually well above the GPU die), and offers nothing to set. Install it with `--node`."
+    },
+    {
+      "q": "Where are my settings kept?",
+      "a": "Each machine's applied settings are in `/var/lib/gpu-tuner/state.json` and its budget, allowed user and loop interval in `/etc/gpu-tuner/config.json`, both root-owned. The page's machine list and ssh key are in `~/.config/gpu-tuner/`. The six hours of history are kept in the page's memory only."
+    },
+    {
+      "q": "Does demo mode touch my GPUs?",
+      "a": "No. It blocks the NVIDIA library before anything runs, never talks to a real `gpu-tunerd` or its socket, never runs ssh, and keeps its state in a temporary directory removed when it stops."
+    }
+  ]
+}

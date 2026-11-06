@@ -28,7 +28,7 @@ def cmd_hosts(argv):
     ap.add_argument("--socket", default=DEFAULT_SOCKET, help="this machine's gpu-tunerd socket")
     ap.add_argument("--from", dest="from_", metavar="ADDR",
                     help="with --init-key: only accept the key from this address (the managing machine's IP "
-                         "as the others see it), e.g. 10.0.0.5")
+                         "as the others see it), e.g. 192.0.2.5")
     ap.add_argument("--timeout", type=float, default=30.0, help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
     if args.init_key:

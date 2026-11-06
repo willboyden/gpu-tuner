@@ -121,7 +121,7 @@ git clone https://github.com/willboyden/gpu-tuner && cd gpu-tuner   # or copy th
 On the machine with the page:
 
 ```bash
-./gpu-tuner hosts --init-key --from 10.0.0.5     # this machine's address, as the others see it
+./gpu-tuner hosts --init-key --from 192.0.2.5     # this machine's address, as the others see it
 ```
 
 That creates the page's own ssh key (`~/.config/gpu-tuner/ssh/id_ed25519`, mode 0600, never
@@ -129,7 +129,7 @@ printed; no passphrase so the page's service can use it unattended) and prints *
 to `~/.ssh/authorized_keys` on every other machine:
 
 ```
-restrict,from="10.0.0.5",command="/usr/local/lib/gpu-tuner/gpu-tuner node --stdio" ssh-ed25519 AAAA… gpu-tuner-hub
+restrict,from="192.0.2.5",command="/usr/local/lib/gpu-tuner/gpu-tuner node --stdio" ssh-ed25519 AAAA… gpu-tuner-hub
 ```
 
 That key can run the node and nothing else: no shell, no forwarding, no pty, and — with `--from`
@@ -146,7 +146,7 @@ here. Then:
      {"id": "local", "label": "Workstation",
       "wall": {"non_gpu_dc_w": 630, "psu_efficiency": 0.9, "circuits": {"15 A": 1440, "20 A": 1920}}},
      {"id": "gpu-box-2", "label": "GPU box 2", "ssh": "gpu-box-2"},
-     {"id": "edge-1", "label": "Edge 1", "ssh": "me@10.0.0.21", "port": 2222}
+     {"id": "edge-1", "label": "Edge 1", "ssh": "me@192.0.2.21", "port": 2222}
    ]}
    ```
 
@@ -166,7 +166,7 @@ in with its own restricted key. Your first ssh to each machine here also checks 
 key. (It assumes `apt`; adjust for your distro.)
 
 ```bash
-PAGE_IP=10.0.0.5          # this machine's address as the others see it; comma-separate several
+PAGE_IP=192.0.2.5          # this machine's address as the others see it; comma-separate several
 LINE=$(./gpu-tuner hosts --init-key --from "$PAGE_IP" | grep '^restrict,')
 if [ -z "$LINE" ]; then echo "init-key printed no key line; stopping"; else
 for h in gpu-box-2 gpu-box-3; do                  # your ssh aliases or user@host
@@ -192,6 +192,12 @@ Pull (or copy) the new version and run the same `install.sh` mode again — on t
 each other one. It's idempotent: `config.json` (your budget) and `state.json` (your saved power caps,
 fan curves and clock caps) are kept, never reseeded, and both services are restarted so the new code
 actually runs. Check with `./gpu-tuner hosts --check` afterwards — it prints each machine's version.
+Before it asks for sudo, `install.sh` loads the kept `/etc/gpu-tuner/config.json` with the NEW
+daemon's own loader and stops, changing nothing, if that daemon would refuse it (otherwise the
+restart would fail and the rollback would remove `gpu-tunerd`). From 1.4.0 the loader also has upper
+bounds: `allowed_uid` at most 4294967294 and `gpu_budget_w` at most 100000. Anything `install.sh` or
+the page's budget control wrote is well inside them; a hand-edited value outside them has to be
+fixed first (`sudoedit /etc/gpu-tuner/config.json`, then run `install.sh` again).
 Machines on different versions keep working together as long as they speak the same protocol; one
 whose protocol is too old or too new is shown on the page as incompatible rather than half-working.
 
@@ -331,11 +337,12 @@ gpu-tunerd (root, systemd)  <--unix socket, SO_PEERCRED-->  gpu-tuner node (you)
 | `gpu_tuner/proto.py` | The wire protocol, and the sanitizers that treat every node's messages as untrusted. |
 | `gpu_tuner/hosts.py` | `hosts.json`: which machines, the exact ssh command for each, the restricted-key line. |
 | `gpu_tuner/hub.py` | One link per machine (reconnect, backoff, heartbeat, one change in flight), and the 6 h history on the page's clock. |
-| `gpu_tuner/server.py` | The page: `/api/state`, `/api/history?host=`, `/api/apply` (routed by machine, never by GPU alone), sign-in. |
+| `gpu_tuner/server.py` | The page: `/api/state`, `/api/history?host=`, `/api/apply` (routed by machine, never by GPU alone), the config builder's read-only `/api/config` and `/api/validate-config`, sign-in. |
+| `gpu_tuner/configcheck.py` | The config builder's checks: a draft `hosts.json` or `config.json` through the loaders' own rules, on the text only. Writes nothing. |
 | `gpu_tuner/cli.py` | `gpu-tuner serve \| open \| node \| probe \| hosts` (and `demo-node`, which `serve --demo` starts). |
 | `gpu_tuner/demo.py` | Demo mode: a pynvml-shaped simulation of three machines, run through the real node, daemon and page code. |
 | `gpu_tuner/seed.py` · `probe.py` | Fresh-install seed from `nvidia-smi` · read-only NVML capability report. |
-| `web/` | The page. No framework, no CDN, no inline script/style (CSP), no `innerHTML`. |
+| `web/` | The page. No framework, no CDN, no inline script/style (CSP), no `innerHTML`. `help.js` + `help.en.json`: Getting started and FAQ; `info.en.json`: the text of every (i) pop-up; `config.js`: the config builder. |
 | `gpu-tunerd.service` | Root unit: `Type=notify`, watchdog, hardened, `ExecStopPost --restore-fans`. |
 | `gpu-tuner-ui.service` | User unit for the page. `gpu-tuner.desktop` (with `icon.svg`) is the launcher. |
 | `install.sh` | Install / upgrade / `--no-ui` / `--node` / `--dry-run` / `--uninstall`, with rollback. |
@@ -365,6 +372,35 @@ page come from `/proc/<pid>/comm`, never `cmdline` (command lines here carry API
 a fixed speed until the next write, so a curve has to be re-evaluated as temperature moves.
 
 ## Security review
+
+### 1.4.0 (2026-11-05): Help, (i) pop-ups and config builder
+
+- **Two new routes, both read-only**, behind the same sign-in cookie and `Host` check as the rest of
+  the API. `GET /api/config` returns the machines the page is *running* with (parsed and validated
+  at startup, re-serialized from those objects, so only `hosts.json`'s schema fields can appear:
+  ids, labels, ssh destinations, ports, wall numbers; the schema has no secret field and the file is
+  not re-read), `examples/hosts.example.json`, and a `config.json` template from the daemon's
+  defaults (its `gpu_budget_w` is the daemon's 750 W fallback, labelled a placeholder on the page;
+  this machine's draft starts from the budget its daemon reports in `/api/state` instead, since a
+  budget under the saved limits makes the daemon lower them on start, and every check of a
+  `config.json` draft says so). The real `/etc/gpu-tuner/config.json` is never read by the page. Demo mode serves its
+  made-up machines and a placeholder uid.
+- **`POST /api/validate-config`** takes `{"kind", "text"}` and runs `hosts.parse_hosts_text` or
+  `daemon.parse_config` (the loaders' own rules, now factored out of them) on the text. Same
+  `Origin` and `application/json` checks as `/api/apply`, a body cap of twice the loader's 64 KiB
+  plus room for escaping, the whole body within 10 s, at most two checks at once (429 beyond). It
+  reads no file contents and writes none (it only checks whether the page's ssh key exists, for a
+  hint), opens no socket or subprocess, is not an op on any daemon, and answers with the loaders' messages, which may name a key or a machine
+  id but never echo any other value (a test sends secret-looking values in several fields).
+- **Nothing new writes.** Installing a drafted file is left to the human, with the commands shown as
+  text. `hosts.json`'s "nothing a browser sends can change it or reach ssh's arguments" still holds.
+- The help and pop-up text are static JSON shown with text nodes only; the grep gate now covers
+  every page script (no `innerHTML`, HTML insertion, style attributes or `eval`). Pop-ups are
+  positioned through CSSOM, which the CSP allows.
+- Two independent audits of this change found input-hardening and robustness issues in the new
+  routes, the config builder and its install commands; all were fixed before release, with
+  regression tests. Every response now also carries `Cross-Origin-Resource-Policy: same-origin` and
+  `Cross-Origin-Opener-Policy: same-origin`.
 
 ### SoC temperature (1.3.0, 2026-10-26)
 
@@ -512,6 +548,26 @@ at the console to fix it. Same caution applies to further `gpu-tunerd.service` h
 | `~/.config/gpu-tuner/` | session token and sign-in nonces (0600); `hosts.json` and `ssh/id_ed25519` if you manage other machines |
 | `~/.config/systemd/user/gpu-tuner-ui.service`, `~/.local/share/applications/gpu-tuner.desktop` | UI unit and launcher. Both point into the checkout (the page's code, the launcher's `icon.svg`), so keep it where it is |
 
+## Help, (i) pop-ups and the config builder
+
+The page has a **Help** panel (header button, or scroll down): *Getting started* and a searchable
+*FAQ*. Every control (power limit and its presets, fan mode, curve, presets, fixed speed, driver
+default, clock cap, baseline, power budget, the machines table and tabs, history) has an **(i)**
+button: what it is, what changing it does, its limits (taken from `safety.py`; a test checks the
+numbers) and when a change takes effect, plus the live figures for that card or machine.
+
+**Config files** drafts the two files the page cannot change itself: `~/.config/gpu-tuner/hosts.json`
+(the machines this page manages) and a machine's `/etc/gpu-tuner/config.json` (`allowed_uid`,
+`gpu_budget_w`, `interval_s`). Start from what the page runs with (for `config.json`: this
+machine's uid and the budget its daemon runs with), the shipped example, a template (whose 750 W
+budget is only the daemon's fallback) or a local file; edit it as a form (an (i) on every field)
+or as text; **Check** runs the same rules `gpu-tuner serve` and `gpu-tunerd` apply when they load
+the file; then Copy or Download it and run the install commands shown (paths, owner and mode
+included): one block that stops at the first failing step, with a `sha256sum -c` of the download
+(for `config.json`, of the root-owned copy that then replaces it). Nothing in the browser writes either
+file: `hosts.json` decides what the page runs ssh against and `config.json` belongs to the root
+daemon. The power budget, which the page has always been able to set, still goes through the daemon.
+
 ## Operate
 
 ```bash
@@ -552,15 +608,20 @@ and logged exactly as it would be; nothing is written to the cards.
   malformed hello, unannounced GPUs, fatal, shell noise, unrestricted key, ssh failure
   messages), routing (a change reaches only the named machine), history gaps (and rows narrower than the
   current series list), the SoC temperature end to end, and the HTTP API.
-- `tests/gpu-tuner-demo-test.py`, 17 tests, ~2 s: demo mode. The simulation (cards load through
+- `tests/gpu-tuner-demo-test.py`, 18 tests, ~2 s: demo mode. The simulation (cards load through
   the real NVML wrapper, a GB10's SoC temperature a few degrees over its die, the same second gives the same reading in two processes, six hours of
   plausible history that joins the live readings, writes land on the simulated card), that nothing
   real is used (no `/proc` reads, no `/sys/class/thermal` reads, made-up hostnames and process names, no ssh or real daemon socket
   in a demo node's command line, `pynvml` cannot be imported in a demo process), and the page end
   to end under a scratch `HOME`: its own cookie, the real page's request checks, three machines up,
-  a change applied through the daemon's checks and read back, a monitor-only machine refusing, and
-  `SIGTERM` removing the temporary directory.
-- The installer's dry run in every mode, and the page's CSP invariants.
+  a change applied through the daemon's checks and read back, a monitor-only machine refusing, the config builder's routes
+  showing only made-up machines and a placeholder uid, and `SIGTERM` removing the temporary directory.
+- `tests/gpu-tuner-help-test.py`, ~5 s: the help and (i) JSON files (shape, no markup, no external
+  URLs or private addresses), every (i) button on the page has an entry and every entry a button,
+  the limits they quote match `safety.py`/`hosts.py`/`daemon.py`, the config checker agrees with
+  `load_hosts`/`load_config` on good and bad files, and the two new routes (sign-in, `Host`,
+  `Origin`, content type, size cap, concurrency limit, no value echoed, nothing written).
+- The installer's dry run in every mode, and the page's CSP invariants (every page script).
 
 `bash tests/live-ui-test.sh` (opt-in, ~70 s, needs a GPU and Firefox, **no root**) —
 `tests/live-ui-test.py` starts a dry-run

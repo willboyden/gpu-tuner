@@ -110,6 +110,10 @@ CLOCK_CAP_MIN_MHZ = 1000
 # workstation's own 300 + 450 W ceiling.) The wall-power estimate that used to live here is a
 # per-machine display setting now — see hosts.py, `wall` in hosts.json.
 DEFAULT_GPU_BUDGET_W = 750
+# The most config.json may hold. set_budget already refuses anything above the sum of the cards'
+# own hardware maximums (a few kW on a real machine); this static ceiling only keeps a hand-edited
+# file sane (no 400-digit numbers) where those maximums are not known yet.
+MAX_GPU_BUDGET_W = 100_000
 
 PROFILES = (
     {

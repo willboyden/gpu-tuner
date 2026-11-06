@@ -1,0 +1,186 @@
+{
+  "_about": "Text for the page's (i) info pop-ups. `controls` are the page's own controls, `fields` the config builder's fields per file. Every entry says what the thing is, what changing it does, its limits and when a change takes effect. Plain text: `backticks` mark code, a blank line starts a paragraph; nothing here is parsed as HTML. Limits come from gpu_tuner/safety.py, hosts.py and daemon.py; tests/gpu-tuner-help-test.py checks the numbers against them.",
+  "controls": {
+    "machines": {
+      "title": "Machines",
+      "what": "One row per GPU on every machine this page manages, with each machine's link state. The list of machines comes from `~/.config/gpu-tuner/hosts.json`; without that file the page manages only the machine it runs on. With a single machine this table is hidden.",
+      "change": "Nothing here changes a card. Pick a machine's name to open its tab.",
+      "limits": "Up to 32 machines in hosts.json and up to 16 GPUs per machine. A machine is reached over ssh with the page's own restricted key; nothing new listens on the network.",
+      "effect": "Readings arrive about once a second. A machine that drops off keeps its last readings, greyed out, with the reason and when the page will retry."
+    },
+    "machine-tabs": {
+      "title": "Machine tabs",
+      "what": "One tab per machine. The cards, power budget and history below belong to the selected machine only.",
+      "change": "Switching tabs changes what is shown, nothing else. A change you apply on a tab goes to that machine's own gpu-tunerd, named by machine, never guessed from a GPU id. The address bar remembers the tab (`#host=<id>`).",
+      "limits": "Use the arrow keys, Home and End to move between tabs. A machine whose link is down shows its last readings and locks its controls; whatever was last applied there stays in force.",
+      "effect": "At once."
+    },
+    "budget": {
+      "title": "Power budget",
+      "what": "One combined cap for the sum of every card's power limit on this machine. The cards share one power supply and one wall circuit, and each card's own maximum is not this machine's safe maximum. Each machine has its own budget; there is no fleet-wide one.",
+      "change": "Set budget sends the new number to this machine's gpu-tunerd, which saves it in `/etc/gpu-tuner/config.json`. It changes no card's limit: it is the number later raises are compared against.",
+      "limits": "A positive whole number of watts, at most the sum of every card's own hardware maximum on this machine (a budget above that could never bind). It is a soft limit: raising a card past it asks you to confirm, and lowering a card is always allowed, even while over budget. A machine whose cards report no settable power limit has no budget at all.",
+      "effect": "At once, with no restart. When gpu-tunerd starts and the saved limits add up to more than the budget, it falls back to each card's baseline (or, if that is still over, its minimum) and says so in a warning."
+    },
+    "power-limit": {
+      "title": "Power limit",
+      "what": "The most power this card may draw, in watts. Under sustained load a card runs at its limit, so this sets its clock: it is the main performance and heat lever.",
+      "change": "The slider, number box and presets only stage a value; Apply power limit sends it. The machine's gpu-tunerd checks it against this card's range and the machine's budget, writes it, then reads it back from the driver. Over budget, the daemon refuses and the page offers Apply anyway, which sends the same value with an explicit confirmation.",
+      "limits": "This card's own range as the driver reports it, narrowed by its profile when the card has one (RTX PRO 6000 Blackwell Max-Q Workstation Edition: 250 to 325 W; RTX PRO 6000 Blackwell Workstation Edition: 150 to 600 W). A card without a profile can be lowered, and raised back up to its factory default, never above it. The card's own range can never be overridden; only the budget can.",
+      "effect": "At once on Apply. The value is saved, re-applied when gpu-tunerd starts, and re-checked every 10 s: if anything else changes it, the daemon puts it back. Stopping gpu-tunerd leaves the limit in place on purpose."
+    },
+    "power-presets": {
+      "title": "Power presets",
+      "what": "Named values for cards with a known profile, each with a note on what was measured or expected at that setting.",
+      "change": "A preset only stages its value, like the slider; nothing changes until Apply power limit.",
+      "limits": "Only cards with a profile have presets, and only presets inside this card's settable range are shown.",
+      "effect": "On Apply power limit."
+    },
+    "fan-mode": {
+      "title": "Fan mode",
+      "what": "Who sets this card's fan speed. Curve: the daemon follows a temperature-to-speed curve. Fixed speed: one speed. Driver default: the driver's own curve, and the daemon writes nothing.",
+      "change": "Picking a mode stages it; Apply fan settings sends it. In Curve and Fixed speed the daemon re-evaluates the speed on every loop (every `interval_s`, 2 s by default) and rewrites it at least every 30 s, because suspend and GPU resets hand fans back to the driver silently.",
+      "limits": "In Curve and Fixed speed the speed is never below the safety floor: a curve measured on the cards this was built on, rescaled so it reaches 100% at 10 °C under this card's own slowdown temperature (85 °C when the card reports none). If a fan write is refused or the temperature cannot be read, the daemon hands that card's fans back to the driver and tries again in 30 s.",
+      "effect": "On Apply, from the daemon's next loop. If gpu-tunerd stops or crashes, every fan goes back to the driver's own curve."
+    },
+    "fan-curve": {
+      "title": "Fan curve",
+      "what": "Points of temperature (°C) and fan speed (%); between points the speed is interpolated in a straight line. The shaded area is the safety floor, the thin grey line the curve in force, the red line the card's first thermal threshold.",
+      "change": "Drag a point, or focus it and use the arrow keys (one degree or one percent per press). Double-click the plot to add a point and a point to remove it; Delete removes a focused point. Changes are staged until Apply fan settings.",
+      "limits": "2 to 8 points. Temperatures from 20 °C up to this card's 100%-by temperature, each higher than the last. Speeds from this card's fan minimum (as the driver reports it) to 100%, never falling as temperature rises, and the last point is 100%. A curve that dips under the safety floor is accepted, but the floor wins when the speed is worked out. The fans speed up at once and slow down only after the card has cooled 2 °C, so they do not hunt.",
+      "effect": "On Apply, from the daemon's next loop."
+    },
+    "fan-presets": {
+      "title": "Fan curve presets",
+      "what": "Three named curves. Lab (cooling-first): 100% at 80 °C. Balanced: quieter at idle and mid-load, still full speed by 83 °C. Quiet: rides just above the safety floor, 100% at 85 °C; expect temperatures near the stock curve's, which costs 4-8% of clock.",
+      "change": "A preset replaces the staged curve; nothing changes until Apply fan settings.",
+      "limits": "Only presets whose last point is at or under this card's own 100%-by temperature are shown.",
+      "effect": "On Apply fan settings."
+    },
+    "fan-manual": {
+      "title": "Fixed fan speed",
+      "what": "One speed, in percent, for every fan on this card.",
+      "change": "Staged until Apply fan settings. The safety floor still applies: once the card is hot enough that the floor is above your speed, the floor sets it.",
+      "limits": "Whole numbers from this card's fan minimum (as the driver reports it) to 100%.",
+      "effect": "On Apply, from the daemon's next loop."
+    },
+    "fan-auto": {
+      "title": "Driver default",
+      "what": "The driver's own fan curve. It is safe but usually lazy: on the cards this was built on it ran 7-11 °C hotter under load than a cooling-first curve, which cost 4-8% of clock.",
+      "change": "On Apply the daemon hands the fans to the driver once and then writes nothing to them.",
+      "limits": "None of the curve rules apply: the driver decides. This is also where every fan goes when gpu-tunerd stops, crashes or hits a fan fault.",
+      "effect": "On Apply."
+    },
+    "clock-cap": {
+      "title": "Core clock cap",
+      "what": "A ceiling on the core clock. A cap can only slow the card, never push it. It is mostly useful for memory-bound work such as decoding, where the core clocks high for little gain; for everything else the power limit is the better lever.",
+      "change": "Tick the box and pick a value, then Apply clock cap. The daemon snaps the value down to a clock step the card supports. Untick and apply to remove the cap.",
+      "limits": "From 1,000 MHz (a guard against typos, not a safety limit) to this card's top supported clock. On a card whose top clock is under 1,000 MHz, the card's own lowest clock replaces that guard. Off by default.",
+      "effect": "At once on Apply. The cap is saved and re-applied when gpu-tunerd starts."
+    },
+    "baseline": {
+      "title": "Reset to lab baseline",
+      "what": "Puts this card back to its starting point: the lab fan curve (fitted to this card's own 100%-by temperature), no clock cap, and its baseline power limit.",
+      "change": "The fan curve and clock cap are reset first, the power limit last. The baseline power is the profile's (Max-Q 300 W, Workstation Edition 450 W) or, for a card without a profile, its factory default, kept inside its settable range.",
+      "limits": "The power step is checked against the machine's budget like any other raise and can be refused; the message then says which parts were reset.",
+      "effect": "At once."
+    },
+    "history": {
+      "title": "History",
+      "what": "Charts of temperature, fan speed, power (with the cap as a dashed line), core clock and utilization for the selected machine's cards.",
+      "change": "Pick a time range, or show the last 60 points as a table. Hover a chart, or focus it and use the left and right arrow keys, to read values.",
+      "limits": "Up to six hours. The 5 and 15 minute ranges show one point per second; longer ranges average the points into buckets. The page keeps the history in memory, so restarting the page starts it over.",
+      "effect": "At once; the charts refresh every few seconds."
+    }
+  },
+  "fields": {
+    "hosts": {
+      "hosts": {
+        "title": "hosts",
+        "what": "The machines this page manages, in the order their tabs appear. The file must be `{\"hosts\": [ ... ]}` and nothing else.",
+        "change": "Adding a machine adds a tab and a row in the Machines table. Removing one stops the page from contacting it; that machine keeps whatever was last applied there.",
+        "limits": "1 to 32 machines; at most 65,536 bytes for the whole file.",
+        "effect": "Read only when the page starts: install the file, then `systemctl --user restart gpu-tuner-ui`."
+      },
+      "hosts.#.id": {
+        "title": "id",
+        "what": "The machine's name in the page's address (`#host=<id>`) and in every change request. `local`, and only `local`, is the machine the page runs on.",
+        "change": "Renaming a machine gives it a new tab address; nothing on the machine itself changes.",
+        "limits": "Lowercase letters, digits and `-`, 1 to 32 characters, not starting with `-`, and unique in the file. `local` takes no `ssh` or `port`; every other id needs `ssh`.",
+        "effect": "When the page restarts."
+      },
+      "hosts.#.label": {
+        "title": "label",
+        "what": "The name shown on the tab, in the Machines table and in messages.",
+        "change": "Display only.",
+        "limits": "1 to 64 printable characters. Leave it out to show the id.",
+        "effect": "When the page restarts."
+      },
+      "hosts.#.ssh": {
+        "title": "ssh",
+        "what": "What you would type after `ssh` to reach the machine: an alias from `~/.ssh/config` or `user@host`.",
+        "change": "The page logs in with its own key only (`gpu-tuner hosts --init-key`) and runs one fixed command there; your ssh config still applies (aliases, users, jump hosts) and `known_hosts` is only read, so connect once by hand first to check and pin the host key.",
+        "limits": "Letters, digits, `.`, `_` and `-`, optionally `user@` in front; never starting with `-` (it would be read as an ssh option) and no spaces, `%` or shell characters.",
+        "effect": "When the page restarts."
+      },
+      "hosts.#.port": {
+        "title": "port",
+        "what": "The ssh port, when it is not the one your ssh config already uses.",
+        "change": "Passed to ssh as `-p`.",
+        "limits": "A whole number from 1 to 65535, or left out. Not allowed on `local`.",
+        "effect": "When the page restarts."
+      },
+      "hosts.#.wall": {
+        "title": "wall",
+        "what": "Optional, display-only: this machine's worst-case wall-power model. The budget panel then estimates the wall draw as (non_gpu_dc_w + the GPU caps) / psu_efficiency and compares it with each circuit.",
+        "change": "Adds the wall estimate and circuit check to this machine's budget panel. It never limits anything.",
+        "limits": "Needs `non_gpu_dc_w` and `psu_efficiency`; `circuits` is optional; no other keys.",
+        "effect": "When the page restarts."
+      },
+      "hosts.#.wall.non_gpu_dc_w": {
+        "title": "non_gpu_dc_w",
+        "what": "Watts the machine's other parts (CPU, memory, drives, fans) draw from the power supply at worst.",
+        "change": "Raises or lowers the wall estimate by this much before efficiency.",
+        "limits": "0 to 100,000.",
+        "effect": "When the page restarts."
+      },
+      "hosts.#.wall.psu_efficiency": {
+        "title": "psu_efficiency",
+        "what": "The power supply's efficiency at that load, as a fraction (0.9 = 90%).",
+        "change": "The wall estimate is divided by it.",
+        "limits": "0.5 to 1.0.",
+        "effect": "When the page restarts."
+      },
+      "hosts.#.wall.circuits": {
+        "title": "circuits",
+        "what": "The wall circuits to compare the estimate with, each a name and its continuous rating in watts, for example `\"15 A\": 1440`.",
+        "change": "The budget panel says which circuit the estimate fits.",
+        "limits": "Up to 4 circuits. Names 1 to 16 printable characters; watts 1 to 100,000.",
+        "effect": "When the page restarts."
+      }
+    },
+    "config": {
+      "allowed_uid": {
+        "title": "allowed_uid",
+        "what": "The one non-root user whose processes may talk to this machine's gpu-tunerd: the user the page runs as here, or the user a remote page logs in as. Root always may.",
+        "change": "The daemon makes its socket that user's and checks the caller's uid on every connection. Any other user is refused and logged.",
+        "limits": "A whole number from 0 to 4294967294. Left out or null: the socket stays root-only and no page can reach it. `install.sh` writes your uid here on first install (`id -u` prints it).",
+        "effect": "When gpu-tunerd restarts: `sudo systemctl restart gpu-tunerd`."
+      },
+      "gpu_budget_w": {
+        "title": "gpu_budget_w",
+        "what": "This machine's combined GPU power budget in watts: the sum of the cards' power limits may not pass it without a confirmation. The page's Set budget button edits this same value.",
+        "change": "Raising it lets the cards' limits add up to more. Lowering it under the limits saved on that machine makes its gpu-tunerd lower them to each card's baseline at its next start (to each card's minimum if the baselines still add up to more), so take the number from that machine's Power budget panel. A hand-edited value is taken as written; only Set budget on the page checks it against the cards' maximums.",
+        "limits": "A whole number of watts from 1 to 100000, or null for a machine where no card has a settable limit. Left out: 750 W. `install.sh` seeds it with the sum of the limits in force on first install. If the saved limits add up to more than this when the daemon starts, it falls back to each card's baseline.",
+        "effect": "When gpu-tunerd restarts. From the page, Set budget takes effect at once and needs no restart."
+      },
+      "interval_s": {
+        "title": "interval_s",
+        "what": "How often, in seconds, the daemon's fan loop runs: it reads each card's temperature and sets the fan speed.",
+        "change": "Shorter reacts faster to temperature changes; longer writes less often. Fan speeds are still rewritten at least every 30 s and power limits checked every 10 s.",
+        "limits": "1 to 10 seconds (whole or decimal). Left out: 2.",
+        "effect": "When gpu-tunerd restarts."
+      }
+    }
+  }
+}
