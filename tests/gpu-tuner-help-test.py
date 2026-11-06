@@ -112,10 +112,11 @@ class InfoCatalog(unittest.TestCase):
             self.assertIsNone(PRIVATE.search(s), s[:80])
 
     def test_every_info_button_has_an_entry_and_every_entry_a_button(self):
-        used = set(re.findall(r"\binfo\('([^']+)'", self.js))
+        # \s*: a formatter may put the arguments of a long call on lines of their own
+        used = set(re.findall(r"\binfo\(\s*'([^']+)'", self.js))
         self.assertEqual(used, set(self.doc["controls"]))
         # fieldInfo(file, key, ...) directly, or through config.js's field(file, key, ...) helper
-        used_fields = set(re.findall(r"\b(?:fieldInfo|field)\('([^']+)', '([^']+)'", self.js))
+        used_fields = set(re.findall(r"\b(?:fieldInfo|field)\(\s*'([^']+)',\s*'([^']+)'", self.js))
         have = {(f, k) for f, cat in self.doc["fields"].items() for k in cat}
         self.assertEqual(used_fields, have)
 

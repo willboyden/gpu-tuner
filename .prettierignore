@@ -1,0 +1,18 @@
+# Prettier formats and checks code and JSON only (js, mjs, cjs, ts, tsx, css, html, json).
+# Markdown and YAML are left as written.
+*.md
+*.yml
+*.yaml
+
+# Dependencies and lockfiles.
+node_modules/
+package-lock.json
+
+# examples/hosts.example.json is laid out by hand, one machine per line: it is the documented
+# shape of hosts.json and the layout web/config.js's formatDoc() writes. Prettier would expand it.
+examples/
+
+# Python bytecode and local config files (never committed).
+__pycache__/
+/hosts.json
+/config.json
