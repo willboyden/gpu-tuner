@@ -110,4 +110,18 @@ for f in "$TUNER"/web/*.json; do
     fi
 done
 
+# Formatting (development only: the page and the installer need no Node). Prettier checks the code
+# and JSON files (.prettierignore lists what it leaves alone). Skip (not fail) until `npm ci` has
+# installed the pinned copy into node_modules/.
+if [[ -x "$TUNER/node_modules/.bin/prettier" ]]; then
+    if fmt_out=$(cd "$TUNER" && node_modules/.bin/prettier --list-different . 2>&1); then
+        echo "  PASS: prettier --check (code and JSON are formatted)"
+    else
+        echo "  FAIL: not formatted (run \`npm run fmt\`): $(tr '\n' ' ' <<<"$fmt_out")"
+        status=1
+    fi
+else
+    echo "  SKIP: prettier --check (run \`npm ci\` once to install the pinned Prettier)"
+fi
+
 exit $status

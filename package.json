@@ -1,0 +1,12 @@
+{
+  "name": "gpu-tuner",
+  "private": true,
+  "description": "Development tooling only: the Prettier formatting gate. gpu-tuner itself needs no Node; install.sh and the services never read this file.",
+  "scripts": {
+    "fmt": "prettier --write .",
+    "fmt:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "prettier": "3.9.10"
+  }
+}

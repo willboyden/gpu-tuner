@@ -24,14 +24,23 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const n0 = v => (v == null ? '–' : Math.round(v).toLocaleString('en-US'));
 const n1 = v => (v == null ? '–' : Number(v).toLocaleString('en-US', { maximumFractionDigits: 1 }));
 const gib = mib => (mib == null ? '–' : (mib / 1024).toLocaleString('en-US', { maximumFractionDigits: 1 }));
-const hhmm = (t, secs) => new Date(t * 1000).toLocaleTimeString([], {
-  hour: '2-digit', minute: '2-digit', second: secs ? '2-digit' : undefined, hour12: false });
+const hhmm = (t, secs) =>
+  new Date(t * 1000).toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: secs ? '2-digit' : undefined,
+    hour12: false,
+  });
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const shortName = name => (name || '').replace(/^NVIDIA\s+/, '');
 // The first temperature the card itself acts on. T.Limit on discrete cards (92 °C, slowdown 95),
 // but a GB10 reports T.Limit 99 °C with slowdown at 86 and shutdown at 90, so take whichever of the
 // reported thresholds is lowest, and name it. Ties keep T.Limit.
-const THRESHOLD_NAMES = [['t_limit', 'T.Limit'], ['slowdown', 'slowdown'], ['shutdown', 'shutdown']];
+const THRESHOLD_NAMES = [
+  ['t_limit', 'T.Limit'],
+  ['slowdown', 'slowdown'],
+  ['shutdown', 'shutdown'],
+];
 function thermalRef(th) {
   let best = null;
   for (const [k, name] of THRESHOLD_NAMES) {
@@ -41,13 +50,26 @@ function thermalRef(th) {
   return best;
 }
 
-const S = { st: null, sel: null, views: new Map(), hist: null, win: 300, hoverT: null, charts: [],
-  tableOpen: false, signedOut: false };
+const S = {
+  st: null,
+  sel: null,
+  views: new Map(),
+  hist: null,
+  win: 300,
+  hoverT: null,
+  charts: [],
+  tableOpen: false,
+  signedOut: false,
+};
 
 // ── theme ────────────────────────────────────────────────────────────────────────────────────
 (function theme() {
   let saved = null;
-  try { saved = localStorage.getItem('gpu-tuner-theme'); } catch (e) { /* private mode */ }
+  try {
+    saved = localStorage.getItem('gpu-tuner-theme');
+  } catch (e) {
+    /* private mode */
+  }
   if (saved) document.documentElement.dataset.theme = saved;
   $('#theme').addEventListener('click', () => {
     const dark = document.documentElement.dataset.theme
@@ -55,7 +77,11 @@ const S = { st: null, sel: null, views: new Map(), hist: null, win: 300, hoverT:
       : matchMedia('(prefers-color-scheme: dark)').matches;
     const next = dark ? 'light' : 'dark';
     document.documentElement.dataset.theme = next;
-    try { localStorage.setItem('gpu-tuner-theme', next); } catch (e) { /* ignore */ }
+    try {
+      localStorage.setItem('gpu-tuner-theme', next);
+    } catch (e) {
+      /* ignore */
+    }
   });
 })();
 
@@ -69,43 +95,86 @@ const loadJSON = (() => {
   const memo = new Map();
   return url => {
     if (!memo.has(url)) {
-      memo.set(url, fetch(url, { credentials: 'same-origin' })
-        .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-        .catch(e => { memo.delete(url); throw e; }));    // a failed load is retried next time
+      memo.set(
+        url,
+        fetch(url, { credentials: 'same-origin' })
+          .then(r => {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.json();
+          })
+          .catch(e => {
+            memo.delete(url);
+            throw e;
+          })
+      ); // a failed load is retried next time
     }
     return memo.get(url);
   };
 })();
 
 function richText(text) {
-  return String(text == null ? '' : text).split(/\n\s*\n/).filter(p => p.trim()).map(p =>
-    el('p', {}, ...p.split('`').map((t, i) => (i % 2 ? el('code', {}, t) : t)).filter(x => x !== '')));
+  return String(text == null ? '' : text)
+    .split(/\n\s*\n/)
+    .filter(p => p.trim())
+    .map(p =>
+      el(
+        'p',
+        {},
+        ...p
+          .split('`')
+          .map((t, i) => (i % 2 ? el('code', {}, t) : t))
+          .filter(x => x !== '')
+      )
+    );
 }
 
 const POP = { node: null, btn: null, seq: 0 };
 function popNode() {
   if (POP.node) return POP.node;
-  const n = el('div', { class: 'info-pop', id: 'info-pop', role: 'dialog', 'aria-labelledby': 'info-pop-t', tabindex: -1, hidden: true });
+  const n = el('div', {
+    class: 'info-pop',
+    id: 'info-pop',
+    role: 'dialog',
+    'aria-labelledby': 'info-pop-t',
+    tabindex: -1,
+    hidden: true,
+  });
   POP.top = typeof n.showPopover === 'function';
-  if (POP.top) { n.setAttribute('popover', 'manual'); n.hidden = false; }
+  if (POP.top) {
+    n.setAttribute('popover', 'manual');
+    n.hidden = false;
+  }
   document.body.append(n);
   POP.node = n;
   return n;
 }
 const popOpen = () => !!POP.node && (POP.top ? POP.node.matches(':popover-open') : !POP.node.hidden);
 function placePop() {
-  const n = POP.node, b = POP.btn;
+  const n = POP.node,
+    b = POP.btn;
   if (!b || !popOpen()) return;
-  const a = b.getBoundingClientRect(), vw = document.documentElement.clientWidth, vh = innerHeight, m = 8;
+  const a = b.getBoundingClientRect(),
+    vw = document.documentElement.clientWidth,
+    vh = innerHeight,
+    m = 8;
   const w = Math.min(400, vw - 2 * m);
   n.style.width = w + 'px';
   n.style.maxHeight = Math.max(160, vh - 2 * m) + 'px';
-  const left = Math.min(Math.max(m, a.left - 12), vw - w - m), ph = n.offsetHeight;
-  const below = a.bottom + 6, above = a.top - 6 - ph;
+  const left = Math.min(Math.max(m, a.left - 12), vw - w - m),
+    ph = n.offsetHeight;
+  const below = a.bottom + 6,
+    above = a.top - 6 - ph;
   const top = below + ph <= vh - m || above < m ? Math.min(below, Math.max(m, vh - m - ph)) : above;
-  n.style.left = left + 'px'; n.style.top = top + 'px';
+  n.style.left = left + 'px';
+  n.style.top = top + 'px';
 }
-function onPopKey(e) { if (e.key === 'Escape' && popOpen()) { e.preventDefault(); e.stopPropagation(); closePop(true); } }
+function onPopKey(e) {
+  if (e.key === 'Escape' && popOpen()) {
+    e.preventDefault();
+    e.stopPropagation();
+    closePop(true);
+  }
+}
 function onPopDown(e) {
   if (popOpen() && !POP.node.contains(e.target) && POP.btn && !POP.btn.contains(e.target)) closePop(false);
 }
@@ -114,7 +183,9 @@ function closePop(refocus) {
   if (!b) return;
   POP.btn = null;
   b.setAttribute('aria-expanded', 'false');
-  if (POP.top) { if (POP.node.matches(':popover-open')) POP.node.hidePopover(); } else POP.node.hidden = true;
+  if (POP.top) {
+    if (POP.node.matches(':popover-open')) POP.node.hidePopover();
+  } else POP.node.hidden = true;
   document.removeEventListener('keydown', onPopKey, true);
   document.removeEventListener('pointerdown', onPopDown, true);
   removeEventListener('resize', placePop);
@@ -122,31 +193,66 @@ function closePop(refocus) {
   if (refocus || POP.node.contains(document.activeElement) || document.activeElement === document.body) b.focus();
 }
 function fillPop(entry, opts, state) {
-  const n = popNode(), block = (h, text) => (text ? el('section', { class: 'ip-block' }, el('h4', {}, h), ...richText(text)) : null);
+  const n = popNode(),
+    block = (h, text) => (text ? el('section', { class: 'ip-block' }, el('h4', {}, h), ...richText(text)) : null);
   const title = (entry && entry.title) || opts.label;
   const body = el('div', { class: 'ip-body' });
   if (state === 'loading') body.append(el('p', { class: 'sub' }, 'Loading…'));
-  else if (!entry) body.append(el('p', { class: 'sub' }, 'The help text could not be loaded. Reload the page to try again.'));
+  else if (!entry)
+    body.append(el('p', { class: 'sub' }, 'The help text could not be loaded. Reload the page to try again.'));
   else {
-    body.append(...[block('What it is', entry.what), block('What changing it does', entry.change),
-      block('Limits', entry.limits), block('When it takes effect', entry.effect)].filter(Boolean));
+    body.append(
+      ...[
+        block('What it is', entry.what),
+        block('What changing it does', entry.change),
+        block('Limits', entry.limits),
+        block('When it takes effect', entry.effect),
+      ].filter(Boolean)
+    );
   }
   let live = [];
-  try { live = (opts.live && opts.live()) || []; } catch (e) { live = []; }
-  if (live.length) body.append(el('section', { class: 'ip-block ip-live' }, el('h4', {}, opts.liveTitle || 'Here, now'),
-    el('ul', {}, ...live.map(x => el('li', {}, x)))));
-  n.replaceChildren(el('div', { class: 'ip-head' }, el('h3', { id: 'info-pop-t' }, title),
-    el('button', { type: 'button', class: 'ghost small ip-close', 'aria-label': 'Close', onclick: () => closePop(true) }, '×')), body);
+  try {
+    live = (opts.live && opts.live()) || [];
+  } catch (e) {
+    live = [];
+  }
+  if (live.length)
+    body.append(
+      el(
+        'section',
+        { class: 'ip-block ip-live' },
+        el('h4', {}, opts.liveTitle || 'Here, now'),
+        el('ul', {}, ...live.map(x => el('li', {}, x)))
+      )
+    );
+  n.replaceChildren(
+    el(
+      'div',
+      { class: 'ip-head' },
+      el('h3', { id: 'info-pop-t' }, title),
+      el(
+        'button',
+        { type: 'button', class: 'ghost small ip-close', 'aria-label': 'Close', onclick: () => closePop(true) },
+        '×'
+      )
+    ),
+    body
+  );
 }
 async function togglePop(btn, where, opts) {
-  if (POP.btn === btn) { closePop(true); return; }
+  if (POP.btn === btn) {
+    closePop(true);
+    return;
+  }
   closePop(false);
-  const n = popNode(), seq = ++POP.seq;
+  const n = popNode(),
+    seq = ++POP.seq;
   POP.btn = btn;
   btn.setAttribute('aria-expanded', 'true');
   btn.setAttribute('aria-controls', n.id);
   fillPop(null, opts, 'loading');
-  if (POP.top) n.showPopover(); else n.hidden = false;
+  if (POP.top) n.showPopover();
+  else n.hidden = false;
   placePop();
   document.addEventListener('keydown', onPopKey, true);
   document.addEventListener('pointerdown', onPopDown, true);
@@ -154,30 +260,60 @@ async function togglePop(btn, where, opts) {
   addEventListener('scroll', placePop, true);
   n.focus({ preventScroll: true });
   let entry = null;
-  try { const doc = await loadJSON('/info.en.json'); entry = where(doc) || null; } catch (e) { entry = null; }
-  if (seq !== POP.seq || POP.btn !== btn) return;      // closed, or another one opened meanwhile
+  try {
+    const doc = await loadJSON('/info.en.json');
+    entry = where(doc) || null;
+  } catch (e) {
+    entry = null;
+  }
+  if (seq !== POP.seq || POP.btn !== btn) return; // closed, or another one opened meanwhile
   fillPop(entry, opts, entry ? 'ok' : 'failed');
   placePop();
 }
 // key names an entry of `controls` in info.en.json; tests check every key used here has one.
 function info(key, label, live, liveTitle) {
-  const b = el('button', { type: 'button', class: 'info', 'aria-haspopup': 'dialog', 'aria-expanded': 'false',
-    'aria-label': `About ${label}`, title: `About ${label}` }, 'i');
+  const b = el(
+    'button',
+    {
+      type: 'button',
+      class: 'info',
+      'aria-haspopup': 'dialog',
+      'aria-expanded': 'false',
+      'aria-label': `About ${label}`,
+      title: `About ${label}`,
+    },
+    'i'
+  );
   b.addEventListener('click', () => togglePop(b, doc => doc.controls && doc.controls[key], { label, live, liveTitle }));
   return b;
 }
 // The config builder's fields: an entry of `fields.<file>` in info.en.json.
 function fieldInfo(file, key, label) {
-  const b = el('button', { type: 'button', class: 'info', 'aria-haspopup': 'dialog', 'aria-expanded': 'false',
-    'aria-label': `About ${label}`, title: `About ${label}` }, 'i');
-  b.addEventListener('click', () => togglePop(b, doc => doc.fields && doc.fields[file] && doc.fields[file][key], { label }));
+  const b = el(
+    'button',
+    {
+      type: 'button',
+      class: 'info',
+      'aria-haspopup': 'dialog',
+      'aria-expanded': 'false',
+      'aria-label': `About ${label}`,
+      title: `About ${label}`,
+    },
+    'i'
+  );
+  b.addEventListener('click', () =>
+    togglePop(b, doc => doc.fields && doc.fields[file] && doc.fields[file][key], { label })
+  );
   return b;
 }
 
 // ── api ──────────────────────────────────────────────────────────────────────────────────────
 async function getJSON(url) {
   const r = await fetch(url, { credentials: 'same-origin' });
-  if (r.status === 401) { S.signedOut = true; throw new Error('signed out'); }
+  if (r.status === 401) {
+    S.signedOut = true;
+    throw new Error('signed out');
+  }
   if (!r.ok) throw new Error('HTTP ' + r.status);
   S.signedOut = false;
   return r.json();
@@ -185,8 +321,12 @@ async function getJSON(url) {
 // Every change names its machine: the server routes by host, never by GPU UUID alone.
 async function apply(host, body) {
   try {
-    const r = await fetch('/api/apply', { method: 'POST', credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.assign({ host }, body)) });
+    const r = await fetch('/api/apply', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(Object.assign({ host }, body)),
+    });
     return await r.json();
   } catch (e) {
     return { ok: false, error: 'could not reach the gpu-tuner server: ' + e.message };
@@ -204,18 +344,29 @@ const interp = (curve, t) => {
   if (t <= curve[0][0]) return curve[0][1];
   if (t >= curve[curve.length - 1][0]) return curve[curve.length - 1][1];
   for (let i = 0; i < curve.length - 1; i++) {
-    const [t0, f0] = curve[i], [t1, f1] = curve[i + 1];
-    if (t >= t0 && t <= t1) return f0 + (f1 - f0) * (t - t0) / (t1 - t0);
+    const [t0, f0] = curve[i],
+      [t1, f1] = curve[i + 1];
+    if (t >= t0 && t <= t1) return f0 + ((f1 - f0) * (t - t0)) / (t1 - t0);
   }
   return 100;
 };
 
 class CurveEditor {
   constructor(card, onChange) {
-    this.card = card; this.onChange = onChange;
-    this.curve = [[30, 30], [80, 100]]; this.applied = null; this.live = null;
-    this.disabled = true; this.drag = null; this.focusIdx = null;
-    this.X = [20, 95]; this.H = 230; this.M = { l: 34, r: 10, t: 10, b: 24 };
+    this.card = card;
+    this.onChange = onChange;
+    this.curve = [
+      [30, 30],
+      [80, 100],
+    ];
+    this.applied = null;
+    this.live = null;
+    this.disabled = true;
+    this.drag = null;
+    this.focusIdx = null;
+    this.X = [20, 95];
+    this.H = 230;
+    this.M = { l: 34, r: 10, t: 10, b: 24 };
     this.svg = sv('svg', { class: 'curve', role: 'group', 'aria-label': 'Fan curve editor' });
     this.svg.addEventListener('pointerdown', e => this.down(e));
     this.svg.addEventListener('pointermove', e => this.move(e));
@@ -227,27 +378,48 @@ class CurveEditor {
   }
   // floor/fullBy are THIS card's own (a mixed-card box can have different slowdown thresholds
   // per card); tMin/maxPts are per-machine constants from that machine's daemon.
-  env() { const d = this.card.d(), st = this.card.hv.st(); return { floor: d.floor, fullBy: d.full_by_c, tMin: st.curve_temp_min_c, maxPts: st.curve_max_points }; }
-  px(t) { return this.M.l + (t - this.X[0]) / (this.X[1] - this.X[0]) * (this.W - this.M.l - this.M.r); }
-  py(f) { return this.M.t + (1 - f / 100) * (this.H - this.M.t - this.M.b); }
+  env() {
+    const d = this.card.d(),
+      st = this.card.hv.st();
+    return { floor: d.floor, fullBy: d.full_by_c, tMin: st.curve_temp_min_c, maxPts: st.curve_max_points };
+  }
+  px(t) {
+    return this.M.l + ((t - this.X[0]) / (this.X[1] - this.X[0])) * (this.W - this.M.l - this.M.r);
+  }
+  py(f) {
+    return this.M.t + (1 - f / 100) * (this.H - this.M.t - this.M.b);
+  }
   at(e) {
-    const r = this.svg.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
-    return { x, y,
-      t: this.X[0] + (x - this.M.l) / (this.W - this.M.l - this.M.r) * (this.X[1] - this.X[0]),
-      f: (1 - (y - this.M.t) / (this.H - this.M.t - this.M.b)) * 100 };
+    const r = this.svg.getBoundingClientRect(),
+      x = e.clientX - r.left,
+      y = e.clientY - r.top;
+    return {
+      x,
+      y,
+      t: this.X[0] + ((x - this.M.l) / (this.W - this.M.l - this.M.r)) * (this.X[1] - this.X[0]),
+      f: (1 - (y - this.M.t) / (this.H - this.M.t - this.M.b)) * 100,
+    };
   }
   nearest(p, within) {
-    let best = -1, bd = within;
+    let best = -1,
+      bd = within;
     this.curve.forEach(([t, f], i) => {
       const d = Math.hypot(this.px(t) - p.x, this.py(f) - p.y);
-      if (d < bd) { bd = d; best = i; }
+      if (d < bd) {
+        bd = d;
+        best = i;
+      }
     });
     return best;
   }
   place(i, t, f) {
-    const c = this.curve, last = c.length - 1, e = this.env();
-    const tLo = i === 0 ? e.tMin : c[i - 1][0] + 1, tHi = i === last ? e.fullBy : c[i + 1][0] - 1;
-    const fLo = i === 0 ? this.fanMin : c[i - 1][1], fHi = i === last ? 100 : c[i + 1][1];
+    const c = this.curve,
+      last = c.length - 1,
+      e = this.env();
+    const tLo = i === 0 ? e.tMin : c[i - 1][0] + 1,
+      tHi = i === last ? e.fullBy : c[i + 1][0] - 1;
+    const fLo = i === 0 ? this.fanMin : c[i - 1][1],
+      fHi = i === last ? 100 : c[i + 1][1];
     // The last point is pinned at 100%: every curve must reach full speed by fullBy.
     c[i] = [clamp(Math.round(t), tLo, tHi), i === last ? 100 : clamp(Math.round(f), fLo, fHi)];
     this.onChange(c.map(p => p.slice()));
@@ -256,17 +428,34 @@ class CurveEditor {
     if (this.disabled) return;
     const i = this.nearest(this.at(e), 18);
     if (i < 0) return;
-    this.drag = i; this.focusIdx = i;
+    this.drag = i;
+    this.focusIdx = i;
     this.svg.setPointerCapture(e.pointerId);
     this.render();
   }
-  move(e) { if (this.drag != null) { const p = this.at(e); this.place(this.drag, p.t, p.f); } }
-  up() { if (this.drag != null) { this.drag = null; this.render(); } }
+  move(e) {
+    if (this.drag != null) {
+      const p = this.at(e);
+      this.place(this.drag, p.t, p.f);
+    }
+  }
+  up() {
+    if (this.drag != null) {
+      this.drag = null;
+      this.render();
+    }
+  }
   dbl(e) {
     if (this.disabled) return;
-    const p = this.at(e), c = this.curve, hit = this.nearest(p, 14);
+    const p = this.at(e),
+      c = this.curve,
+      hit = this.nearest(p, 14);
     if (hit >= 0) {
-      if (c.length > 2 && hit !== c.length - 1) { c.splice(hit, 1); this.focusIdx = null; this.onChange(c.map(q => q.slice())); }
+      if (c.length > 2 && hit !== c.length - 1) {
+        c.splice(hit, 1);
+        this.focusIdx = null;
+        this.onChange(c.map(q => q.slice()));
+      }
       return;
     }
     const t = Math.round(p.t);
@@ -280,44 +469,78 @@ class CurveEditor {
   key(e) {
     const g = e.target.closest && e.target.closest('g.point');
     if (!g || this.disabled) return;
-    const i = Number(g.dataset.i), [t, f] = this.curve[i];
+    const i = Number(g.dataset.i),
+      [t, f] = this.curve[i];
     const step = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, 1], ArrowDown: [0, -1] }[e.key];
-    if (step) { e.preventDefault(); this.focusIdx = i; this.place(i, t + step[0], f + step[1]); }
-    else if ((e.key === 'Delete' || e.key === 'Backspace') && this.curve.length > 2 && i !== this.curve.length - 1) {
-      e.preventDefault(); this.curve.splice(i, 1); this.focusIdx = null; this.onChange(this.curve.map(q => q.slice()));
+    if (step) {
+      e.preventDefault();
+      this.focusIdx = i;
+      this.place(i, t + step[0], f + step[1]);
+    } else if ((e.key === 'Delete' || e.key === 'Backspace') && this.curve.length > 2 && i !== this.curve.length - 1) {
+      e.preventDefault();
+      this.curve.splice(i, 1);
+      this.focusIdx = null;
+      this.onChange(this.curve.map(q => q.slice()));
     }
   }
   set(curve, applied, fanMin, tLimit, disabled) {
-    this.curve = curve.map(p => p.slice()); this.applied = applied; this.fanMin = fanMin;
-    this.tLimit = tLimit; this.disabled = disabled;
+    this.curve = curve.map(p => p.slice());
+    this.applied = applied;
+    this.fanMin = fanMin;
+    this.tLimit = tLimit;
+    this.disabled = disabled;
     this.render();
   }
-  setLive(temp, fan) { this.live = temp == null ? null : { temp, fan }; if (this.drag == null) this.render(); }
+  setLive(temp, fan) {
+    this.live = temp == null ? null : { temp, fan };
+    if (this.drag == null) this.render();
+  }
   render() {
     this.W = this.svg.clientWidth;
     if (!this.W || !S.st || !this.card.d()) return;
-    const { floor, fullBy } = this.env(), g = [], x0 = this.X[0], x1 = this.X[1];
+    const { floor, fullBy } = this.env(),
+      g = [],
+      x0 = this.X[0],
+      x1 = this.X[1];
     this.svg.setAttribute('viewBox', `0 0 ${this.W} ${this.H}`);
     this.svg.setAttribute('height', this.H);
     this.svg.classList.toggle('disabled', this.disabled);
     for (const f of [0, 25, 50, 75, 100]) {
-      g.push(sv('line', { class: f ? 'gridline' : 'axisline', x1: this.px(x0), x2: this.px(x1), y1: this.py(f), y2: this.py(f) }));
+      g.push(
+        sv('line', {
+          class: f ? 'gridline' : 'axisline',
+          x1: this.px(x0),
+          x2: this.px(x1),
+          y1: this.py(f),
+          y2: this.py(f),
+        })
+      );
       g.push(sv('text', { x: this.M.l - 6, y: this.py(f) + 4, 'text-anchor': 'end' }, f + '%'));
     }
-    for (let t = x0; t <= x1; t += 10) g.push(sv('text', { x: this.px(t), y: this.H - 6, 'text-anchor': 'middle' }, t + '°'));
+    for (let t = x0; t <= x1; t += 10)
+      g.push(sv('text', { x: this.px(t), y: this.H - 6, 'text-anchor': 'middle' }, t + '°'));
     // safety floor: the region no curve or fixed speed can enter
     const fl = [[x0, floor[0][1]], ...floor, [x1, 100]];
     const under = fl.map(([t, f]) => `${this.px(t)},${this.py(Math.max(f, this.fanMin))}`).join(' ');
-    g.push(sv('polygon', { class: 'floor', points: `${this.px(x0)},${this.py(0)} ${under} ${this.px(x1)},${this.py(0)}` }));
+    g.push(
+      sv('polygon', { class: 'floor', points: `${this.px(x0)},${this.py(0)} ${under} ${this.px(x1)},${this.py(0)}` })
+    );
     g.push(sv('polyline', { class: 'floor-edge', points: under }));
     g.push(sv('text', { class: 'lbl', x: this.px(x0) + 8, y: this.py(9) }, 'safety floor: fans never run below this'));
     if (this.tLimit) {
       const lim = this.tLimit.v;
       g.push(sv('line', { class: 'limit', x1: this.px(lim), x2: this.px(lim), y1: this.py(100), y2: this.py(0) }));
-      g.push(sv('text', { class: 'lbl', x: this.px(lim) - 4, y: this.py(0) - 5, 'text-anchor': 'end' }, `${this.tLimit.name} ${lim}°`));
+      g.push(
+        sv(
+          'text',
+          { class: 'lbl', x: this.px(lim) - 4, y: this.py(0) - 5, 'text-anchor': 'end' },
+          `${this.tLimit.name} ${lim}°`
+        )
+      );
     }
     const path = c => [[x0, c[0][1]], ...c, [x1, 100]].map(([t, f]) => `${this.px(t)},${this.py(f)}`).join(' ');
-    if (this.applied && !same(this.applied, this.curve)) g.push(sv('polyline', { class: 'applied', points: path(this.applied) }));
+    if (this.applied && !same(this.applied, this.curve))
+      g.push(sv('polyline', { class: 'applied', points: path(this.applied) }));
     g.push(sv('polyline', { class: 'line', points: path(this.curve) }));
     if (this.live) {
       const lx = this.px(clamp(this.live.temp, x0, x1));
@@ -327,10 +550,21 @@ class CurveEditor {
     }
     const last = this.curve.length - 1;
     this.curve.forEach(([t, f], i) => {
-      g.push(sv('g', { class: 'point' + (this.drag === i ? ' drag' : ''), 'data-i': i, tabindex: this.disabled ? null : 0,
-        role: 'slider', 'aria-label': `Curve point ${i + 1}`, 'aria-valuetext': `${t} degrees, ${f} percent` },
-        sv('circle', { class: 'pt', cx: this.px(t), cy: this.py(f), r: 5.5 }),
-        sv('circle', { class: 'hit' + (i === last ? ' locked' : ''), cx: this.px(t), cy: this.py(f), r: 14 })));
+      g.push(
+        sv(
+          'g',
+          {
+            class: 'point' + (this.drag === i ? ' drag' : ''),
+            'data-i': i,
+            tabindex: this.disabled ? null : 0,
+            role: 'slider',
+            'aria-label': `Curve point ${i + 1}`,
+            'aria-valuetext': `${t} degrees, ${f} percent`,
+          },
+          sv('circle', { class: 'pt', cx: this.px(t), cy: this.py(f), r: 5.5 }),
+          sv('circle', { class: 'hit' + (i === last ? ' locked' : ''), cx: this.px(t), cy: this.py(f), r: 14 })
+        )
+      );
     });
     // Re-rendering replaces the point nodes, so put focus back where it was (or where an
     // insert/drag just moved it) or a keyboard user loses their place once a second.
@@ -349,12 +583,18 @@ class CurveEditor {
 // ── one card ─────────────────────────────────────────────────────────────────────────────────
 class GpuCard {
   constructor(hv, stat, slot) {
-    this.hv = hv; this.uuid = stat.uuid; this.stat = stat; this.slot = slot;
+    this.hv = hv;
+    this.uuid = stat.uuid;
+    this.stat = stat;
+    this.slot = slot;
     this.pending = { power: null, fan: null, clock: null };
     this.t = {};
     const tile = (key, label) => {
-      const value = el('div', { class: 'value' }), sub = el('div', { class: 'sub' }), extra = el('div');
-      const name = el('div', { class: 'label' }, label), root = el('div', { class: 'tile' }, name, value, extra, sub);
+      const value = el('div', { class: 'value' }),
+        sub = el('div', { class: 'sub' }),
+        extra = el('div');
+      const name = el('div', { class: 'label' }, label),
+        root = el('div', { class: 'tile' }, name, value, extra, sub);
       this.t[key] = { value, sub, extra, name, root };
       return root;
     };
@@ -364,67 +604,165 @@ class GpuCard {
     this.procs = el('div', { class: 'procs' });
     this.note = el('div', { class: 'sub' });
     this.unsupported = el('div', { class: 'sub unsupported' });
-    this.root = el('article', { class: `gpu s${slot}` },
+    this.root = el(
+      'article',
+      { class: `gpu s${slot}` },
       el('header', {}, el('span', { class: 'key' }), this.title, this.chips, this.subtitle),
-      el('div', { class: 'tiles' }, tile('temp', 'Temperature'), tile('soc', 'SoC temperature'), tile('fan', 'Fan'), tile('power', 'Power draw'),
-        tile('util', 'GPU utilization'), tile('vram', 'VRAM'), tile('clock', 'Core clock'),
-        tile('limit', 'Clock limiter'), tile('energy', 'Energy used')),
-      this.procs, this.note, this.buildPower(), this.buildFan(), this.buildClock(), this.unsupported, this.buildBaseline());
+      el(
+        'div',
+        { class: 'tiles' },
+        tile('temp', 'Temperature'),
+        tile('soc', 'SoC temperature'),
+        tile('fan', 'Fan'),
+        tile('power', 'Power draw'),
+        tile('util', 'GPU utilization'),
+        tile('vram', 'VRAM'),
+        tile('clock', 'Core clock'),
+        tile('limit', 'Clock limiter'),
+        tile('energy', 'Energy used')
+      ),
+      this.procs,
+      this.note,
+      this.buildPower(),
+      this.buildFan(),
+      this.buildClock(),
+      this.unsupported,
+      this.buildBaseline()
+    );
   }
-  d() { const st = this.hv.st(); return st ? st.gpus.find(g => g.uuid === this.uuid) : undefined; }
-  lv() { const h = this.hv.h(); return (h && h.live.gpus[this.uuid]) || {}; }
-  say(node, kind, text) { node.className = 'msg' + (kind ? ' ' + kind : ''); node.textContent = text || ''; }
+  d() {
+    const st = this.hv.st();
+    return st ? st.gpus.find(g => g.uuid === this.uuid) : undefined;
+  }
+  lv() {
+    const h = this.hv.h();
+    return (h && h.live.gpus[this.uuid]) || {};
+  }
+  say(node, kind, text) {
+    node.className = 'msg' + (kind ? ' ' + kind : '');
+    node.textContent = text || '';
+  }
 
   // power ────────────────────────────────────────────────
   buildPower() {
-    this.pSlider = el('input', { type: 'range', step: 5, 'aria-label': 'Power limit in watts', oninput: e => this.stagePower(+e.target.value) });
-    this.pNumber = el('input', { type: 'number', step: 1, 'aria-label': 'Power limit in watts',
-      oninput: e => { if (e.target.value !== '') this.stagePower(+e.target.value, true); },
-      onchange: e => { e.target.value = this.pending.power ?? this.d().settings.power_w; } });
+    this.pSlider = el('input', {
+      type: 'range',
+      step: 5,
+      'aria-label': 'Power limit in watts',
+      oninput: e => this.stagePower(+e.target.value),
+    });
+    this.pNumber = el('input', {
+      type: 'number',
+      step: 1,
+      'aria-label': 'Power limit in watts',
+      oninput: e => {
+        if (e.target.value !== '') this.stagePower(+e.target.value, true);
+      },
+      onchange: e => {
+        e.target.value = this.pending.power ?? this.d().settings.power_w;
+      },
+    });
     this.pEnds = el('div', { class: 'range-ends' });
     this.pPresets = el('div', { class: 'row' });
     this.pMsg = el('div', { class: 'msg' });
-    this.pApply = el('button', { class: 'primary', type: 'button', onclick: () => this.applyPower() }, 'Apply power limit');
-    this.pOverride = el('button', { class: 'ghost small', type: 'button', hidden: true,
-      onclick: () => this.applyPower(true) }, 'Apply anyway (exceeds budget)');
-    this.pRevert = el('button', { class: 'ghost small', type: 'button', onclick: () => { this.pending.power = null; this.syncPower(); } }, 'Revert');
-    this.pPresetRow = el('div', { class: 'row' }, this.pPresets, info('power-presets', 'power presets',
-      () => this.livePresets(), 'This card'));
-    this.pField = el('fieldset', { class: 'ctl' }, el('legend', {}, 'Power limit ', info('power-limit', 'the power limit', () => this.livePower(), 'This card')),
-      el('div', { class: 'row' }, this.pSlider, this.pNumber, el('span', {}, 'W')), this.pEnds, this.pPresetRow,
-      el('div', { class: 'actions' }, this.pApply, this.pOverride, this.pRevert, this.pMsg));
+    this.pApply = el(
+      'button',
+      { class: 'primary', type: 'button', onclick: () => this.applyPower() },
+      'Apply power limit'
+    );
+    this.pOverride = el(
+      'button',
+      { class: 'ghost small', type: 'button', hidden: true, onclick: () => this.applyPower(true) },
+      'Apply anyway (exceeds budget)'
+    );
+    this.pRevert = el(
+      'button',
+      {
+        class: 'ghost small',
+        type: 'button',
+        onclick: () => {
+          this.pending.power = null;
+          this.syncPower();
+        },
+      },
+      'Revert'
+    );
+    this.pPresetRow = el(
+      'div',
+      { class: 'row' },
+      this.pPresets,
+      info('power-presets', 'power presets', () => this.livePresets(), 'This card')
+    );
+    this.pField = el(
+      'fieldset',
+      { class: 'ctl' },
+      el(
+        'legend',
+        {},
+        'Power limit ',
+        info('power-limit', 'the power limit', () => this.livePower(), 'This card')
+      ),
+      el('div', { class: 'row' }, this.pSlider, this.pNumber, el('span', {}, 'W')),
+      this.pEnds,
+      this.pPresetRow,
+      el('div', { class: 'actions' }, this.pApply, this.pOverride, this.pRevert, this.pMsg)
+    );
     return this.pField;
   }
   stagePower(v, typing) {
     if (!this.hv.canEdit()) return;
-    const d = this.d(), [lo, hi] = d.power_range;
+    const d = this.d(),
+      [lo, hi] = d.power_range;
     if (!Number.isFinite(v)) return;
-    this.pKeep = false;             // a new value from you always gets a fresh preview
+    this.pKeep = false; // a new value from you always gets a fresh preview
     const w = clamp(Math.round(v), lo, hi);
     this.pending.power = w === d.settings.power_w ? null : w;
-    this.pOverride.hidden = true;   // a changed value needs its own fresh confirmation
+    this.pOverride.hidden = true; // a changed value needs its own fresh confirmation
     this.syncPower(typing && w !== v);
   }
   syncPower(keepTyped) {
-    const d = this.d(), st = this.hv.st(), wall = this.hv.h().wall;
+    const d = this.d(),
+      st = this.hv.st(),
+      wall = this.hv.h().wall;
     this.pField.hidden = !d.power_range;
     if (!d.power_range) return;
-    const [lo, hi] = d.power_range, applied = d.settings.power_w, val = this.pending.power ?? applied;
-    this.pSlider.min = this.pNumber.min = lo; this.pSlider.max = this.pNumber.max = hi;
+    const [lo, hi] = d.power_range,
+      applied = d.settings.power_w,
+      val = this.pending.power ?? applied;
+    this.pSlider.min = this.pNumber.min = lo;
+    this.pSlider.max = this.pNumber.max = hi;
     this.pSlider.value = val;
     if (!keepTyped && document.activeElement !== this.pNumber) this.pNumber.value = val;
-    this.pEnds.replaceChildren(el('span', {}, `${lo} W min`),
-      el('span', {}, this.stat.power_default_w ? `factory default ${this.stat.power_default_w} W` : ''), el('span', {}, `${hi} W max`));
+    this.pEnds.replaceChildren(
+      el('span', {}, `${lo} W min`),
+      el('span', {}, this.stat.power_default_w ? `factory default ${this.stat.power_default_w} W` : ''),
+      el('span', {}, `${hi} W max`)
+    );
     const otherCards = st.gpus.filter(g => g.uuid !== this.uuid);
     const others = otherCards.reduce((a, g) => a + (g.settings.power_w || 0), 0);
-    const total = others + val, budget = st.budget_w, over = budget != null && total > budget && val > applied;
+    const total = others + val,
+      budget = st.budget_w,
+      over = budget != null && total > budget && val > applied;
     const presets = (d.profile ? d.profile.power_presets : []).filter(p => p.w >= lo && p.w <= hi);
     this.pPresetRow.hidden = !presets.length;
     const pKey = JSON.stringify([presets, val]);
     if (pKey !== this.pKey) {
       this.pKey = pKey;
-      this.pPresets.replaceChildren(...presets.map(p => el('button', { class: 'small', type: 'button',
-        'aria-pressed': String(p.w === val), title: p.note, onclick: () => this.stagePower(p.w) }, p.label)));
+      this.pPresets.replaceChildren(
+        ...presets.map(p =>
+          el(
+            'button',
+            {
+              class: 'small',
+              type: 'button',
+              'aria-pressed': String(p.w === val),
+              title: p.note,
+              onclick: () => this.stagePower(p.w),
+            },
+            p.label
+          )
+        )
+      );
     }
     const staged = this.pending.power != null;
     // Over budget no longer blocks Apply outright — the daemon is the authority and will refuse
@@ -432,29 +770,47 @@ class GpuCard {
     this.pApply.disabled = !staged || this.busy;
     this.pRevert.hidden = !staged;
     const note = presets.find(p => p.w === val);
-    const othersLead = otherCards.length === 0 ? `${val} W is`
-      : otherCards.length === 1 ? `${val} W here plus ${others} W on the other card is`
-      : `${val} W here plus ${others} W across the other ${otherCards.length} cards is`;
+    const othersLead =
+      otherCards.length === 0
+        ? `${val} W is`
+        : otherCards.length === 1
+          ? `${val} W here plus ${others} W on the other card is`
+          : `${val} W here plus ${others} W across the other ${otherCards.length} cards is`;
     const wallText = wall ? `; worst case at the wall about ${n0(wallEstimate(wall, total))} W` : '';
-    const budgetText = budget != null ? `Combined caps ${total} of ${budget} W${wallText}.` : `Combined caps on this machine ${total} W${wallText}.`;
+    const budgetText =
+      budget != null
+        ? `Combined caps ${total} of ${budget} W${wallText}.`
+        : `Combined caps on this machine ${total} W${wallText}.`;
     // pKeep guards ALL three branches, not just the idle one: a rejected apply (unlike the old
     // hard-block) leaves pending.power staged, so without this an immediate re-render would
     // clobber the daemon's real error with this recomputed prediction text.
     if (!this.pKeep) {
-      if (over) this.say(this.pMsg, 'warn', otherCards.length === 0
-        ? `${val} W is ${total - budget} W over this machine’s ${budget} W budget. You can still apply — it will ask you to confirm.`
-        : `${othersLead} ${total} W: ${total - budget} W over the ${budget} W budget. You can still apply — it will ask you to confirm.`);
+      if (over)
+        this.say(
+          this.pMsg,
+          'warn',
+          otherCards.length === 0
+            ? `${val} W is ${total - budget} W over this machine’s ${budget} W budget. You can still apply — it will ask you to confirm.`
+            : `${othersLead} ${total} W: ${total - budget} W over the ${budget} W budget. You can still apply — it will ask you to confirm.`
+        );
       else if (staged) this.say(this.pMsg, '', `${applied} W → ${val} W. ${budgetText}${note ? ' ' + note.note : ''}`);
       else this.say(this.pMsg, '', note ? note.note : '');
     }
   }
   livePower() {
-    const d = this.d(), st = this.hv.st();
+    const d = this.d(),
+      st = this.hv.st();
     if (!d || !d.power_range) return [];
-    const out = [`Settable ${d.power_range[0]}–${d.power_range[1]} W` +
-      (this.stat.power_default_w ? ` · factory default ${this.stat.power_default_w} W` : '') + ` · applied ${n0(d.settings.power_w)} W`,
-      d.profile ? `Profile: ${d.profile.label}` : 'No profile for this card: it can be lowered, and raised back to its factory default, never above it'];
-    if (st && st.budget_w != null) out.push(`Machine budget ${n0(st.budget_w)} W; all caps together ${n0(st.budget_used_w)} W`);
+    const out = [
+      `Settable ${d.power_range[0]}–${d.power_range[1]} W` +
+        (this.stat.power_default_w ? ` · factory default ${this.stat.power_default_w} W` : '') +
+        ` · applied ${n0(d.settings.power_w)} W`,
+      d.profile
+        ? `Profile: ${d.profile.label}`
+        : 'No profile for this card: it can be lowered, and raised back to its factory default, never above it',
+    ];
+    if (st && st.budget_w != null)
+      out.push(`Machine budget ${n0(st.budget_w)} W; all caps together ${n0(st.budget_used_w)} W`);
     return out;
   }
   livePresets() {
@@ -465,55 +821,165 @@ class GpuCard {
   }
   async applyPower(confirmOverride) {
     const watts = this.pending.power;
-    const ok = await this.send({ op: 'set_power', uuid: this.uuid, watts, confirm_override: !!confirmOverride }, this.pMsg, 'power',
-      g => `Applied${confirmOverride ? ', over budget as confirmed' : ''}. The driver reports ${g.settings.power_w} W in force.`);
+    const ok = await this.send(
+      { op: 'set_power', uuid: this.uuid, watts, confirm_override: !!confirmOverride },
+      this.pMsg,
+      'power',
+      g =>
+        `Applied${confirmOverride ? ', over budget as confirmed' : ''}. The driver reports ${g.settings.power_w} W in force.`
+    );
     this.pOverride.hidden = !(!ok && this.lastResp && this.lastResp.over_budget);
   }
 
   // fans ─────────────────────────────────────────────────
   buildFan() {
-    this.fModes = el('div', { class: 'seg', role: 'group', 'aria-label': 'Fan mode' },
-      ...[['curve', 'Curve'], ['manual', 'Fixed speed'], ['auto', 'Driver default']].map(([m, label]) =>
-        el('button', { type: 'button', 'data-mode': m, onclick: () => this.stageFan({ mode: m }) }, label)));
+    this.fModes = el(
+      'div',
+      { class: 'seg', role: 'group', 'aria-label': 'Fan mode' },
+      ...[
+        ['curve', 'Curve'],
+        ['manual', 'Fixed speed'],
+        ['auto', 'Driver default'],
+      ].map(([m, label]) =>
+        el('button', { type: 'button', 'data-mode': m, onclick: () => this.stageFan({ mode: m }) }, label)
+      )
+    );
     this.editor = new CurveEditor(this, curve => this.stageFan({ curve }));
     this.fPresets = el('div', { class: 'row' });
     this.fPoints = el('div', { class: 'points' });
-    this.fCurveBox = el('div', {}, this.editor.svg, this.fPoints,
-      el('div', { class: 'row' }, this.fPresets, info('fan-presets', 'fan curve presets', () => this.liveFanPresets(), 'This card')),
-      el('div', { class: 'row hint' }, el('span', { class: 'sub' }, 'Drag a point, or focus it and use the arrow keys. Double-click the plot to add a point, a point to remove it. The last point stays at 100%.'),
-        info('fan-curve', 'the fan curve', () => this.liveCurve(), 'This card')));
-    this.fSlider = el('input', { type: 'range', step: 1, max: 100, 'aria-label': 'Fixed fan speed in percent', oninput: e => this.stageFan({ manual_pct: +e.target.value }) });
+    this.fCurveBox = el(
+      'div',
+      {},
+      this.editor.svg,
+      this.fPoints,
+      el(
+        'div',
+        { class: 'row' },
+        this.fPresets,
+        info('fan-presets', 'fan curve presets', () => this.liveFanPresets(), 'This card')
+      ),
+      el(
+        'div',
+        { class: 'row hint' },
+        el(
+          'span',
+          { class: 'sub' },
+          'Drag a point, or focus it and use the arrow keys. Double-click the plot to add a point, a point to remove it. The last point stays at 100%.'
+        ),
+        info('fan-curve', 'the fan curve', () => this.liveCurve(), 'This card')
+      )
+    );
+    this.fSlider = el('input', {
+      type: 'range',
+      step: 1,
+      max: 100,
+      'aria-label': 'Fixed fan speed in percent',
+      oninput: e => this.stageFan({ manual_pct: +e.target.value }),
+    });
     this.fPct = el('b');
-    this.fManualBox = el('div', {}, el('div', { class: 'row' }, this.fSlider, this.fPct,
-      info('fan-manual', 'the fixed fan speed', () => { const d = this.d(); return d ? [`Fixed speed ${d.fan_min}–100%`] : []; }, 'This card')),
-      el('div', { class: 'sub' }, 'A fixed speed still rises with temperature once the safety floor passes it, so it cannot cook the card.'));
-    this.fAutoBox = el('div', { class: 'row hint' }, el('span', { class: 'sub' }, 'Hands the fans back to the driver’s own curve. It is safe but usually lazy: on the cards this was built on it ran 7–11 °C hotter under load than a cooling-first curve, which cost 4–8% of clock.'),
-      info('fan-auto', 'the driver default'));
+    this.fManualBox = el(
+      'div',
+      {},
+      el(
+        'div',
+        { class: 'row' },
+        this.fSlider,
+        this.fPct,
+        info(
+          'fan-manual',
+          'the fixed fan speed',
+          () => {
+            const d = this.d();
+            return d ? [`Fixed speed ${d.fan_min}–100%`] : [];
+          },
+          'This card'
+        )
+      ),
+      el(
+        'div',
+        { class: 'sub' },
+        'A fixed speed still rises with temperature once the safety floor passes it, so it cannot cook the card.'
+      )
+    );
+    this.fAutoBox = el(
+      'div',
+      { class: 'row hint' },
+      el(
+        'span',
+        { class: 'sub' },
+        'Hands the fans back to the driver’s own curve. It is safe but usually lazy: on the cards this was built on it ran 7–11 °C hotter under load than a cooling-first curve, which cost 4–8% of clock.'
+      ),
+      info('fan-auto', 'the driver default')
+    );
     this.fState = el('div', { class: 'row' });
     this.fMsg = el('div', { class: 'msg' });
-    this.fApply = el('button', { class: 'primary', type: 'button', onclick: () => this.applyFan() }, 'Apply fan settings');
-    this.fRevert = el('button', { class: 'ghost small', type: 'button', onclick: () => { this.pending.fan = null; this.syncFan(); } }, 'Revert');
-    this.fField = el('fieldset', { class: 'ctl' }, el('legend', {}, 'Fans'),
-      el('div', { class: 'row' }, this.fModes, info('fan-mode', 'the fan mode', () => this.liveFan(), 'This card')), this.fState,
-      this.fCurveBox, this.fManualBox, this.fAutoBox, el('div', { class: 'actions' }, this.fApply, this.fRevert, this.fMsg));
+    this.fApply = el(
+      'button',
+      { class: 'primary', type: 'button', onclick: () => this.applyFan() },
+      'Apply fan settings'
+    );
+    this.fRevert = el(
+      'button',
+      {
+        class: 'ghost small',
+        type: 'button',
+        onclick: () => {
+          this.pending.fan = null;
+          this.syncFan();
+        },
+      },
+      'Revert'
+    );
+    this.fField = el(
+      'fieldset',
+      { class: 'ctl' },
+      el('legend', {}, 'Fans'),
+      el(
+        'div',
+        { class: 'row' },
+        this.fModes,
+        info('fan-mode', 'the fan mode', () => this.liveFan(), 'This card')
+      ),
+      this.fState,
+      this.fCurveBox,
+      this.fManualBox,
+      this.fAutoBox,
+      el('div', { class: 'actions' }, this.fApply, this.fRevert, this.fMsg)
+    );
     return this.fField;
   }
-  fanValue() { return this.pending.fan || this.d().settings.fan; }
+  fanValue() {
+    return this.pending.fan || this.d().settings.fan;
+  }
   liveFan() {
     const d = this.d();
     if (!d) return [];
-    const mode = { curve: 'curve', manual: 'fixed speed', auto: 'driver default', unmanaged: 'not managed here' }[d.settings.fan.mode];
-    return [`Fans at 100% by ${d.full_by_c} °C whatever the mode`, `Fan minimum ${d.fan_min}%`, `Mode in force: ${mode}`];
+    const mode = { curve: 'curve', manual: 'fixed speed', auto: 'driver default', unmanaged: 'not managed here' }[
+      d.settings.fan.mode
+    ];
+    return [
+      `Fans at 100% by ${d.full_by_c} °C whatever the mode`,
+      `Fan minimum ${d.fan_min}%`,
+      `Mode in force: ${mode}`,
+    ];
   }
   liveCurve() {
-    const d = this.d(), st = this.hv.st();
+    const d = this.d(),
+      st = this.hv.st();
     if (!d || !st) return [];
-    return [`Temperatures ${st.curve_temp_min_c}–${d.full_by_c} °C`, `Speeds ${d.fan_min}–100%`, `Up to ${st.curve_max_points} points`];
+    return [
+      `Temperatures ${st.curve_temp_min_c}–${d.full_by_c} °C`,
+      `Speeds ${d.fan_min}–100%`,
+      `Up to ${st.curve_max_points} points`,
+    ];
   }
   liveFanPresets() {
-    const d = this.d(), st = this.hv.st();
+    const d = this.d(),
+      st = this.hv.st();
     if (!d || !st) return [];
-    return Object.values(st.curve_presets).filter(p => p.curve[p.curve.length - 1][0] <= d.full_by_c).map(p => `${p.label}: ${p.note}`);
+    return Object.values(st.curve_presets)
+      .filter(p => p.curve[p.curve.length - 1][0] <= d.full_by_c)
+      .map(p => `${p.label}: ${p.note}`);
   }
   stageFan(patch) {
     if (!this.hv.canEdit()) return;
@@ -523,67 +989,151 @@ class GpuCard {
     this.syncFan();
   }
   syncFan() {
-    const d = this.d(), st = this.hv.st();
-    this.fField.hidden = !this.stat.nfans;      // a fanless card (passive, or SoC-cooled) has nothing to drive
+    const d = this.d(),
+      st = this.hv.st();
+    this.fField.hidden = !this.stat.nfans; // a fanless card (passive, or SoC-cooled) has nothing to drive
     if (!this.stat.nfans) return;
-    const fan = this.fanValue(), applied = d.settings.fan, staged = !!this.pending.fan;
+    const fan = this.fanValue(),
+      applied = d.settings.fan,
+      staged = !!this.pending.fan;
     const shown = fan.mode === 'unmanaged' ? 'curve' : fan.mode;
     for (const b of this.fModes.children) b.setAttribute('aria-pressed', String(b.dataset.mode === fan.mode));
-    this.fCurveBox.hidden = shown !== 'curve'; this.fManualBox.hidden = shown !== 'manual'; this.fAutoBox.hidden = shown !== 'auto';
-    this.editor.set(fan.curve, applied.mode === 'curve' ? applied.curve : null, d.fan_min, thermalRef(this.stat.thresholds), !this.hv.canEdit());
+    this.fCurveBox.hidden = shown !== 'curve';
+    this.fManualBox.hidden = shown !== 'manual';
+    this.fAutoBox.hidden = shown !== 'auto';
+    this.editor.set(
+      fan.curve,
+      applied.mode === 'curve' ? applied.curve : null,
+      d.fan_min,
+      thermalRef(this.stat.thresholds),
+      !this.hv.canEdit()
+    );
     this.fPoints.textContent = fan.curve.map(([t, f]) => `${t}° → ${f}%`).join('   ·   ');
     const fKey = JSON.stringify(fan.curve);
     if (fKey !== this.fKey) {
       this.fKey = fKey;
       // only presets this card's own rule accepts (each must reach 100% by its own full_by_c)
       const fits = Object.values(st.curve_presets).filter(p => p.curve[p.curve.length - 1][0] <= d.full_by_c);
-      this.fPresets.replaceChildren(el('span', { class: 'sub' }, 'Presets'), ...fits.map(p =>
-        el('button', { class: 'small', type: 'button', title: p.note, 'aria-pressed': String(same(p.curve, fan.curve)),
-          onclick: () => this.stageFan({ mode: 'curve', curve: p.curve }) }, p.label)));
+      this.fPresets.replaceChildren(
+        el('span', { class: 'sub' }, 'Presets'),
+        ...fits.map(p =>
+          el(
+            'button',
+            {
+              class: 'small',
+              type: 'button',
+              title: p.note,
+              'aria-pressed': String(same(p.curve, fan.curve)),
+              onclick: () => this.stageFan({ mode: 'curve', curve: p.curve }),
+            },
+            p.label
+          )
+        )
+      );
     }
-    this.fSlider.min = d.fan_min; this.fSlider.value = fan.manual_pct; this.fPct.textContent = fan.manual_pct + ' %';
-    this.fApply.disabled = !staged || this.busy; this.fRevert.hidden = !staged;
+    this.fSlider.min = d.fan_min;
+    this.fSlider.value = fan.manual_pct;
+    this.fPct.textContent = fan.manual_pct + ' %';
+    this.fApply.disabled = !staged || this.busy;
+    this.fRevert.hidden = !staged;
     // fKeep guards both branches: a failed apply leaves pending.fan staged, so without this an
     // immediate re-render would clobber the daemon's error with "Not applied yet." (same class
     // of bug fixed in syncPower — see its comment).
     if (!this.fKeep) {
-      if (staged) this.say(this.fMsg, '', 'Not applied yet.' + (applied.mode === 'curve' && fan.mode === 'curve' ? ' The thin grey line is the curve in force.' : ''));
+      if (staged)
+        this.say(
+          this.fMsg,
+          '',
+          'Not applied yet.' +
+            (applied.mode === 'curve' && fan.mode === 'curve' ? ' The thin grey line is the curve in force.' : '')
+        );
       else this.say(this.fMsg, '', '');
     }
   }
   async applyFan() {
     const f = this.pending.fan;
-    await this.send({ op: 'set_fan', uuid: this.uuid, mode: f.mode, curve: f.curve, manual_pct: f.manual_pct }, this.fMsg, 'fan',
-      g => `Applied: ${{ curve: 'curve', manual: 'fixed speed', auto: 'driver default' }[g.settings.fan.mode]}.`);
+    await this.send(
+      { op: 'set_fan', uuid: this.uuid, mode: f.mode, curve: f.curve, manual_pct: f.manual_pct },
+      this.fMsg,
+      'fan',
+      g => `Applied: ${{ curve: 'curve', manual: 'fixed speed', auto: 'driver default' }[g.settings.fan.mode]}.`
+    );
   }
 
   // clock cap ────────────────────────────────────────────
   buildClock() {
     this.cOn = el('input', { type: 'checkbox', onchange: e => this.stageClock({ on: e.target.checked }) });
-    this.cSlider = el('input', { type: 'range', step: 15, 'aria-label': 'Maximum core clock in MHz', oninput: e => this.stageClock({ mhz: +e.target.value }) });
+    this.cSlider = el('input', {
+      type: 'range',
+      step: 15,
+      'aria-label': 'Maximum core clock in MHz',
+      oninput: e => this.stageClock({ mhz: +e.target.value }),
+    });
     this.cVal = el('b');
     this.cMsg = el('div', { class: 'msg' });
-    this.cApply = el('button', { class: 'primary', type: 'button', onclick: () => this.applyClock() }, 'Apply clock cap');
-    this.cRevert = el('button', { class: 'ghost small', type: 'button', onclick: () => { this.pending.clock = null; this.syncClock(); } }, 'Revert');
-    this.cField = el('fieldset', { class: 'ctl' }, el('legend', {}, 'Core clock cap ', info('clock-cap', 'the core clock cap', () => {
-      const d = this.d();
-      return d && d.clock_range ? [`Cap ${n0(d.clock_range[0])}–${n0(d.clock_range[1])} MHz`,
-        d.settings.clock_cap_mhz != null ? `In force: ${n0(d.settings.clock_cap_mhz)} MHz` : 'In force: no cap'] : [];
-    }, 'This card')),
+    this.cApply = el(
+      'button',
+      { class: 'primary', type: 'button', onclick: () => this.applyClock() },
+      'Apply clock cap'
+    );
+    this.cRevert = el(
+      'button',
+      {
+        class: 'ghost small',
+        type: 'button',
+        onclick: () => {
+          this.pending.clock = null;
+          this.syncClock();
+        },
+      },
+      'Revert'
+    );
+    this.cField = el(
+      'fieldset',
+      { class: 'ctl' },
+      el(
+        'legend',
+        {},
+        'Core clock cap ',
+        info(
+          'clock-cap',
+          'the core clock cap',
+          () => {
+            const d = this.d();
+            return d && d.clock_range
+              ? [
+                  `Cap ${n0(d.clock_range[0])}–${n0(d.clock_range[1])} MHz`,
+                  d.settings.clock_cap_mhz != null
+                    ? `In force: ${n0(d.settings.clock_cap_mhz)} MHz`
+                    : 'In force: no cap',
+                ]
+              : [];
+          },
+          'This card'
+        )
+      ),
       el('label', { class: 'check' }, this.cOn, 'Cap the maximum core clock'),
       el('div', { class: 'row' }, this.cSlider, this.cVal),
-      el('div', { class: 'sub' }, 'A cap can only slow the card, never push it. It is mostly useful for memory-bound decode, where the core clocks high for little gain; for everything else the power limit is the better lever. Off by default.'),
-      el('div', { class: 'actions' }, this.cApply, this.cRevert, this.cMsg));
+      el(
+        'div',
+        { class: 'sub' },
+        'A cap can only slow the card, never push it. It is mostly useful for memory-bound decode, where the core clocks high for little gain; for everything else the power limit is the better lever. Off by default.'
+      ),
+      el('div', { class: 'actions' }, this.cApply, this.cRevert, this.cMsg)
+    );
     return this.cField;
   }
   clockValue() {
-    const d = this.d(), cap = d.settings.clock_cap_mhz;
-    return this.pending.clock || { on: cap != null, mhz: cap != null ? cap : (d.clock_range ? d.clock_range[1] : 0) };
+    const d = this.d(),
+      cap = d.settings.clock_cap_mhz;
+    return this.pending.clock || { on: cap != null, mhz: cap != null ? cap : d.clock_range ? d.clock_range[1] : 0 };
   }
   stageClock(patch) {
     if (!this.hv.canEdit()) return;
     this.cKeep = false;
-    const d = this.d(), next = Object.assign({}, this.clockValue(), patch), cap = d.settings.clock_cap_mhz;
+    const d = this.d(),
+      next = Object.assign({}, this.clockValue(), patch),
+      cap = d.settings.clock_cap_mhz;
     const asApplied = next.on ? next.mhz === cap : cap == null;
     this.pending.clock = asApplied ? null : next;
     this.syncClock();
@@ -592,40 +1142,64 @@ class GpuCard {
     const d = this.d();
     this.cField.hidden = !d.clock_range;
     if (!d.clock_range) return;
-    const c = this.clockValue(), staged = !!this.pending.clock;
-    this.cSlider.min = d.clock_range[0]; this.cSlider.max = d.clock_range[1];
-    this.cOn.checked = c.on; this.cSlider.value = c.mhz; this.cSlider.disabled = !c.on;
+    const c = this.clockValue(),
+      staged = !!this.pending.clock;
+    this.cSlider.min = d.clock_range[0];
+    this.cSlider.max = d.clock_range[1];
+    this.cOn.checked = c.on;
+    this.cSlider.value = c.mhz;
+    this.cSlider.disabled = !c.on;
     this.cVal.textContent = c.on ? `${n0(c.mhz)} MHz` : `uncapped (${n0(d.clock_range[1])} MHz)`;
-    this.cApply.disabled = !staged || this.busy; this.cRevert.hidden = !staged;
+    this.cApply.disabled = !staged || this.busy;
+    this.cRevert.hidden = !staged;
     if (!this.cKeep) {
-      if (staged) this.say(this.cMsg, '', 'Not applied yet. The daemon snaps the value down to a clock step the card supports.');
+      if (staged)
+        this.say(this.cMsg, '', 'Not applied yet. The daemon snaps the value down to a clock step the card supports.');
       else this.say(this.cMsg, '', '');
     }
   }
   async applyClock() {
     const c = this.pending.clock;
-    await this.send({ op: 'set_clock_cap', uuid: this.uuid, mhz: c.on ? c.mhz : null }, this.cMsg, 'clock',
-      g => (g.settings.clock_cap_mhz == null ? 'Applied: cap removed.' : `Applied: capped at ${n0(g.settings.clock_cap_mhz)} MHz.`));
+    await this.send({ op: 'set_clock_cap', uuid: this.uuid, mhz: c.on ? c.mhz : null }, this.cMsg, 'clock', g =>
+      g.settings.clock_cap_mhz == null
+        ? 'Applied: cap removed.'
+        : `Applied: capped at ${n0(g.settings.clock_cap_mhz)} MHz.`
+    );
   }
 
   // baseline ─────────────────────────────────────────────
   buildBaseline() {
     this.bMsg = el('div', { class: 'msg' });
-    this.bBtn = el('button', { type: 'button', onclick: async () => {
-      if (await this.send({ op: 'baseline', uuid: this.uuid }, this.bMsg, null, () => 'Reset to the lab baseline.')) {
-        this.pending = { power: null, fan: null, clock: null };
-        this.sync();
-      }
-    } });
-    this.bRow = el('div', { class: 'actions' }, this.bBtn, info('baseline', 'the lab baseline', () => {
-      const d = this.d();
-      return d && d.baseline_power_w != null ? [`Baseline power here: ${d.baseline_power_w} W`] : [];
-    }, 'This card'), this.bMsg);
+    this.bBtn = el('button', {
+      type: 'button',
+      onclick: async () => {
+        if (await this.send({ op: 'baseline', uuid: this.uuid }, this.bMsg, null, () => 'Reset to the lab baseline.')) {
+          this.pending = { power: null, fan: null, clock: null };
+          this.sync();
+        }
+      },
+    });
+    this.bRow = el(
+      'div',
+      { class: 'actions' },
+      this.bBtn,
+      info(
+        'baseline',
+        'the lab baseline',
+        () => {
+          const d = this.d();
+          return d && d.baseline_power_w != null ? [`Baseline power here: ${d.baseline_power_w} W`] : [];
+        },
+        'This card'
+      ),
+      this.bMsg
+    );
     return this.bRow;
   }
 
   async send(body, msgNode, group, okText) {
-    this.busy = true; this.sync();
+    this.busy = true;
+    this.sync();
     this.say(msgNode, '', 'Applying…');
     const resp = await apply(this.hv.id, body);
     this.busy = false;
@@ -640,7 +1214,12 @@ class GpuCard {
     } else {
       this.say(msgNode, 'err', resp.error || 'Request failed.');
     }
-    if (keep) { this[keep] = true; setTimeout(() => { this[keep] = false; }, 8000); }
+    if (keep) {
+      this[keep] = true;
+      setTimeout(() => {
+        this[keep] = false;
+      }, 8000);
+    }
     render();
     return !!resp.ok;
   }
@@ -650,39 +1229,57 @@ class GpuCard {
     const edit = this.hv.canEdit();
     // Locked controls are disabled one by one rather than through fieldset.disabled, which would
     // also disable the (i) buttons inside: their explanations matter most on a locked card.
-    const ctls = () => [this.pField, this.fField, this.cField].flatMap(f => [...f.querySelectorAll('input, select, textarea, button:not(.info)')]);
+    const ctls = () =>
+      [this.pField, this.fField, this.cField].flatMap(f => [
+        ...f.querySelectorAll('input, select, textarea, button:not(.info)'),
+      ]);
     for (const c of ctls()) c.disabled = false;
     for (const f of [this.pField, this.fField, this.cField]) f.classList.toggle('locked', !edit);
     this.bBtn.disabled = !edit || this.busy;
-    this.syncPower(); this.syncFan(); this.syncClock();
+    this.syncPower();
+    this.syncFan();
+    this.syncClock();
     if (!edit) for (const c of ctls()) c.disabled = true;
-    const d = this.d(), missing = [];
+    const d = this.d(),
+      missing = [];
     if (!d.power_range) missing.push('power limit');
     if (!this.stat.nfans) missing.push('fan control');
     if (!d.clock_range) missing.push('clock cap');
     this.unsupported.hidden = !missing.length;
     this.unsupported.textContent = missing.length
       ? `Not offered for this GPU: ${missing.join(', ')} — NVML reports ${missing.length > 1 ? 'them' : 'it'} as unavailable` +
-        (this.stat.mem_kind === 'unified' ? ' (on a system-on-chip GPU, firmware usually owns power and cooling).' : '.')
+        (this.stat.mem_kind === 'unified'
+          ? ' (on a system-on-chip GPU, firmware usually owns power and cooling).'
+          : '.')
       : '';
     this.bRow.hidden = missing.length === 3;
   }
 
   update() {
-    const d = this.d(), lv = this.lv(), th = this.stat.thresholds || {}, t = this.t;
+    const d = this.d(),
+      lv = this.lv(),
+      th = this.stat.thresholds || {},
+      t = this.t;
     if (!d) return;
     this.title.textContent = d.profile ? d.profile.label : shortName(this.stat.name) || `GPU ${this.stat.index}`;
     const pci = this.stat.pci ? ` · PCI ${this.stat.pci.replace(/^0+:/, '')}` : '';
     const vbios = this.stat.vbios ? ` · VBIOS ${this.stat.vbios}` : '';
-    this.subtitle.textContent = `${this.stat.name}${pci}${vbios}` +
+    this.subtitle.textContent =
+      `${this.stat.name}${pci}${vbios}` +
       // An integrated GPU (unified memory, e.g. GB10) has no slot: NVML still reports a "Gen 1 ×1 of
       // ×16" link for it, which would read as a riser fault. Only discrete cards get the PCIe line.
-      (lv.pcie_gen && this.stat.mem_kind !== 'unified' ? ` · PCIe Gen ${lv.pcie_gen_max} ×${lv.pcie_width_max ?? lv.pcie_width}` +
-        (lv.pcie_width != null && lv.pcie_width_max != null && lv.pcie_width < lv.pcie_width_max
-          ? ` (running at ×${lv.pcie_width}: check the slot/riser)` : ` (Gen ${lv.pcie_gen} right now; the link idles down)`) : '') +
+      (lv.pcie_gen && this.stat.mem_kind !== 'unified'
+        ? ` · PCIe Gen ${lv.pcie_gen_max} ×${lv.pcie_width_max ?? lv.pcie_width}` +
+          (lv.pcie_width != null && lv.pcie_width_max != null && lv.pcie_width < lv.pcie_width_max
+            ? ` (running at ×${lv.pcie_width}: check the slot/riser)`
+            : ` (Gen ${lv.pcie_gen} right now; the link idles down)`)
+        : '') +
       (lv.persistence != null ? ` · persistence ${lv.persistence ? 'on' : 'off'}` : '');
-    this.note.textContent = d.profile ? d.profile.note
-      : d.power_range ? 'No tuned profile for this card: its power limit can be lowered but not raised above the factory default.' : '';
+    this.note.textContent = d.profile
+      ? d.profile.note
+      : d.power_range
+        ? 'No tuned profile for this card: its power limit can be lowered but not raised above the factory default.'
+        : '';
     this.bBtn.textContent = `Reset to lab baseline (${d.baseline_power_w != null ? d.baseline_power_w + ' W · ' : ''}${this.stat.nfans ? 'lab fan curve · ' : ''}no clock cap)`;
 
     t.temp.value.replaceChildren(n0(lv.temp), el('small', {}, ' °C'));
@@ -690,8 +1287,11 @@ class GpuCard {
     t.temp.sub.textContent = ref && lv.temp != null ? `${ref.v - lv.temp}° under ${ref.name} (${ref.v} °C)` : '';
     const fans = (lv.fans || []).filter(v => v != null);
     t.fan.value.replaceChildren(fans.length ? n0(Math.max(...fans)) : '–', el('small', {}, ' %'));
-    const mode = { curve: 'curve', manual: 'fixed', auto: 'driver default', unmanaged: 'not managed here' }[d.settings.fan.mode];
-    t.fan.sub.textContent = !this.stat.nfans ? 'no controllable fans reported'
+    const mode = { curve: 'curve', manual: 'fixed', auto: 'driver default', unmanaged: 'not managed here' }[
+      d.settings.fan.mode
+    ];
+    t.fan.sub.textContent = !this.stat.nfans
+      ? 'no controllable fans reported'
       : (fans.length > 1 ? fans.map((v, i) => `fan ${i + 1} ${v}%`).join(' · ') + ' · ' : '') + mode;
     // A fanless card (passive, or SoC-cooled like GB10) gets no Fan tile, as it gets no fan editor or
     // fan chart: the "Not offered" line already says so. It also keeps a GB10, which adds a SoC tile,
@@ -700,9 +1300,15 @@ class GpuCard {
     const cap = lv.power_limit_w;
     t.power.value.replaceChildren(n0(lv.power_w), el('small', {}, ' W'));
     this.meter(t.power.extra, lv.power_w, cap);
-    t.power.sub.textContent = cap != null ? `${lv.power_w != null ? Math.round(lv.power_w / cap * 100) : '–'}% of the ${cap} W cap` : (lv.power_w != null ? 'no software cap' : '');
+    t.power.sub.textContent =
+      cap != null
+        ? `${lv.power_w != null ? Math.round((lv.power_w / cap) * 100) : '–'}% of the ${cap} W cap`
+        : lv.power_w != null
+          ? 'no software cap'
+          : '';
     t.util.value.replaceChildren(n0(lv.util), el('small', {}, ' %'));
-    t.util.sub.textContent = `memory bus ${n0(lv.mem_util)}%` +
+    t.util.sub.textContent =
+      `memory bus ${n0(lv.mem_util)}%` +
       (lv.encoder_util || lv.decoder_util ? ` · encode ${n0(lv.encoder_util)}% · decode ${n0(lv.decoder_util)}%` : '');
     const unified = (lv.mem_kind || this.stat.mem_kind) === 'unified';
     t.temp.name.textContent = unified ? 'GPU temperature' : 'Temperature';
@@ -714,42 +1320,74 @@ class GpuCard {
     // die NVML reports; the node sends the hottest kernel thermal zone. Discrete cards get no tile.
     t.soc.root.hidden = !unified;
     t.soc.value.replaceChildren(n0(lv.soc_temp), el('small', {}, ' °C'));
-    t.soc.sub.textContent = lv.soc_temp != null ? 'hottest thermal zone: the whole chip, CPU and GPU'
-      : 'not reported (no readable thermal zone, or an older gpu-tuner on that machine)';
+    t.soc.sub.textContent =
+      lv.soc_temp != null
+        ? 'hottest thermal zone: the whole chip, CPU and GPU'
+        : 'not reported (no readable thermal zone, or an older gpu-tuner on that machine)';
     t.clock.value.replaceChildren(n0(lv.clock_mhz), el('small', {}, ' MHz'));
-    t.clock.sub.textContent = `memory ${n0(lv.mem_clock_mhz)} MHz · P${lv.pstate ?? '–'}` + (d.settings.clock_cap_mhz ? ` · capped ${n0(d.settings.clock_cap_mhz)}` : '');
-    const r = lv.reasons || [], names = S.st.reasons;
+    t.clock.sub.textContent =
+      `memory ${n0(lv.mem_clock_mhz)} MHz · P${lv.pstate ?? '–'}` +
+      (d.settings.clock_cap_mhz ? ` · capped ${n0(d.settings.clock_cap_mhz)}` : '');
+    const r = lv.reasons || [],
+      names = S.st.reasons;
     const bad = r.find(k => ['hw_thermal', 'hw_slowdown', 'hw_power_brake'].includes(k));
-    let kind = 'good', text = 'None active', sub = 'The card is running as fast as the load asks.';
-    if (bad) { kind = 'critical'; text = names[bad]; sub = 'The hardware is protecting itself. Check cooling and power delivery.'; }
-    else if (r.includes('sw_thermal')) { kind = 'serious'; text = names.sw_thermal; sub = 'Clocks are being cut for temperature.'; }
-    else if (r.includes('sw_power_cap')) { kind = ''; text = names.sw_power_cap; sub = 'Normal under sustained load: the cap sets the clock.'; }
-    else if (r.includes('idle')) { kind = 'good'; text = 'Idle'; sub = 'Nothing is asking for clocks.'; }
+    let kind = 'good',
+      text = 'None active',
+      sub = 'The card is running as fast as the load asks.';
+    if (bad) {
+      kind = 'critical';
+      text = names[bad];
+      sub = 'The hardware is protecting itself. Check cooling and power delivery.';
+    } else if (r.includes('sw_thermal')) {
+      kind = 'serious';
+      text = names.sw_thermal;
+      sub = 'Clocks are being cut for temperature.';
+    } else if (r.includes('sw_power_cap')) {
+      kind = '';
+      text = names.sw_power_cap;
+      sub = 'Normal under sustained load: the cap sets the clock.';
+    } else if (r.includes('idle')) {
+      kind = 'good';
+      text = 'Idle';
+      sub = 'Nothing is asking for clocks.';
+    }
     t.limit.value.replaceChildren(el('span', { class: 'chip ' + kind }, text));
     t.limit.sub.textContent = sub;
-    t.energy.value.replaceChildren(lv.energy_j != null ? (lv.energy_j / 3.6e6).toLocaleString('en-US', { maximumFractionDigits: 2 }) : '–', el('small', {}, ' kWh'));
+    t.energy.value.replaceChildren(
+      lv.energy_j != null ? (lv.energy_j / 3.6e6).toLocaleString('en-US', { maximumFractionDigits: 2 }) : '–',
+      el('small', {}, ' kWh')
+    );
     t.energy.sub.textContent = lv.energy_j != null ? 'since the driver loaded' : 'not reported';
 
     const chips = [];
-    if (lv.temp != null && ref && lv.temp >= ref.v - 2) chips.push(el('span', { class: 'chip critical' }, `At the thermal limit (${ref.name} ${ref.v} °C)`));
-    else if (this.stat.nfans && lv.temp != null && lv.temp >= d.full_by_c) chips.push(el('span', { class: 'chip serious' }, `Above ${d.full_by_c} °C: fans forced to 100%`));
-    if (lv.ecc_enabled && lv.ecc_uncorrected_total) chips.push(el('span', { class: 'chip critical' }, `${n0(lv.ecc_uncorrected_total)} uncorrected ECC error(s)`));
-    else if (lv.ecc_enabled && lv.ecc_corrected_total) chips.push(el('span', { class: 'chip warning' }, `${n0(lv.ecc_corrected_total)} corrected ECC error(s)`));
+    if (lv.temp != null && ref && lv.temp >= ref.v - 2)
+      chips.push(el('span', { class: 'chip critical' }, `At the thermal limit (${ref.name} ${ref.v} °C)`));
+    else if (this.stat.nfans && lv.temp != null && lv.temp >= d.full_by_c)
+      chips.push(el('span', { class: 'chip serious' }, `Above ${d.full_by_c} °C: fans forced to 100%`));
+    if (lv.ecc_enabled && lv.ecc_uncorrected_total)
+      chips.push(el('span', { class: 'chip critical' }, `${n0(lv.ecc_uncorrected_total)} uncorrected ECC error(s)`));
+    else if (lv.ecc_enabled && lv.ecc_corrected_total)
+      chips.push(el('span', { class: 'chip warning' }, `${n0(lv.ecc_corrected_total)} corrected ECC error(s)`));
     this.chips.replaceChildren(...chips);
     const procs = lv.procs || [];
-    this.procs.textContent = procs.length ? 'On this card: ' + procs.map(p => `${p.name}${p.vram_mib ? ' ' + gib(p.vram_mib) + ' GiB' : ''}`).join(' · ') : 'Nothing resident on this card.';
+    this.procs.textContent = procs.length
+      ? 'On this card: ' + procs.map(p => `${p.name}${p.vram_mib ? ' ' + gib(p.vram_mib) + ' GiB' : ''}`).join(' · ')
+      : 'Nothing resident on this card.';
 
     const fs = [];
     if (d.fan.fault) fs.push(el('span', { class: 'chip critical wrap' }, 'Fan fault: ' + d.fan.fault));
-    if (d.fan.floor_active) fs.push(el('span', { class: 'chip warning' }, 'The safety floor is setting the speed right now'));
-    if (d.settings.fan.mode === 'unmanaged') fs.push(el('span', { class: 'chip' }, 'Monitor-only: this page is not driving these fans'));
-    else if (d.fan.fan_pct != null) fs.push(el('span', { class: 'chip' }, `Daemon target ${d.fan.fan_pct}% at ${d.fan.temp} °C`));
+    if (d.fan.floor_active)
+      fs.push(el('span', { class: 'chip warning' }, 'The safety floor is setting the speed right now'));
+    if (d.settings.fan.mode === 'unmanaged')
+      fs.push(el('span', { class: 'chip' }, 'Monitor-only: this page is not driving these fans'));
+    else if (d.fan.fan_pct != null)
+      fs.push(el('span', { class: 'chip' }, `Daemon target ${d.fan.fan_pct}% at ${d.fan.temp} °C`));
     this.fState.replaceChildren(...fs);
     this.editor.setLive(lv.temp, fans.length ? Math.max(...fans) : null);
   }
   meter(node, v, max) {
     const bar = el('span');
-    bar.style.width = (v != null && max ? clamp(v / max * 100, 0, 100) : 0) + '%';
+    bar.style.width = (v != null && max ? clamp((v / max) * 100, 0, 100) : 0) + '%';
     node.className = 'meter';
     node.replaceChildren(bar);
   }
@@ -760,79 +1398,150 @@ class BudgetPanel {
   constructor(hv) {
     this.hv = hv;
     const q = c => el('span', { class: c });
-    this.used = q('b-used'); this.subEl = el('div', { class: 'sub b-sub' });
+    this.used = q('b-used');
+    this.subEl = el('div', { class: 'sub b-sub' });
     this.bar = el('div', { class: 'stack b-bar', role: 'img', 'aria-label': 'Combined power caps against the budget' });
     this.legend = el('div', { class: 'legend b-legend' });
-    this.input = el('input', { class: 'b-input', type: 'number', step: 1, min: 1, 'aria-label': 'Combined GPU power budget in watts' });
-    this.applyBtn = el('button', { class: 'ghost small b-apply', type: 'button', onclick: () => this.setBudget() }, 'Set budget');
+    this.input = el('input', {
+      class: 'b-input',
+      type: 'number',
+      step: 1,
+      min: 1,
+      'aria-label': 'Combined GPU power budget in watts',
+    });
+    this.applyBtn = el(
+      'button',
+      { class: 'ghost small b-apply', type: 'button', onclick: () => this.setBudget() },
+      'Set budget'
+    );
     this.msg = el('span', { class: 'msg b-msg' });
-    this.draw = el('dd', { class: 'b-draw' }); this.wall = el('dd', { class: 'b-wall' }); this.circuit = el('dd', { class: 'b-circuit' });
-    this.wallRows = [el('div', {}, el('dt', {}, 'Worst case at the wall, at these caps'), this.wall),
-      el('div', {}, el('dt', {}, 'Against a wall circuit'), this.circuit)];
+    this.draw = el('dd', { class: 'b-draw' });
+    this.wall = el('dd', { class: 'b-wall' });
+    this.circuit = el('dd', { class: 'b-circuit' });
+    this.wallRows = [
+      el('div', {}, el('dt', {}, 'Worst case at the wall, at these caps'), this.wall),
+      el('div', {}, el('dt', {}, 'Against a wall circuit'), this.circuit),
+    ];
     this.note = el('p', { class: 'note' });
-    this.root = el('section', { class: 'panel budget' },
-      el('h2', {}, 'Power budget ', info('budget', 'the power budget', () => this.live(), 'This machine')),
-      el('div', { class: 'budget-row' },
-        el('div', { class: 'budget-main' },
+    this.root = el(
+      'section',
+      { class: 'panel budget' },
+      el(
+        'h2',
+        {},
+        'Power budget ',
+        info('budget', 'the power budget', () => this.live(), 'This machine')
+      ),
+      el(
+        'div',
+        { class: 'budget-row' },
+        el(
+          'div',
+          { class: 'budget-main' },
           el('div', { class: 'hero' }, this.used, el('span', { class: 'hero-unit' }, ' W capped')),
-          this.subEl, this.bar, this.legend,
-          el('div', { class: 'row' }, this.input, el('span', {}, 'W'), this.applyBtn, this.msg)),
-        el('dl', { class: 'facts' }, el('div', {}, el('dt', {}, 'Drawing now'), this.draw), ...this.wallRows)),
-      this.note);
+          this.subEl,
+          this.bar,
+          this.legend,
+          el('div', { class: 'row' }, this.input, el('span', {}, 'W'), this.applyBtn, this.msg)
+        ),
+        el('dl', { class: 'facts' }, el('div', {}, el('dt', {}, 'Drawing now'), this.draw), ...this.wallRows)
+      ),
+      this.note
+    );
   }
   live() {
     const st = this.hv.st();
     if (!st) return [];
     const hw = st.gpus.reduce((a, g) => a + (g.power_range ? g.power_range[1] : 0), 0);
-    return [st.budget_w != null ? `Budget ${n0(st.budget_w)} W` : 'No budget set', `All caps together ${n0(st.budget_used_w)} W`,
-      `Highest budget the daemon accepts here: ${n0(hw)} W (every card at its own maximum)`];
+    return [
+      st.budget_w != null ? `Budget ${n0(st.budget_w)} W` : 'No budget set',
+      `All caps together ${n0(st.budget_used_w)} W`,
+      `Highest budget the daemon accepts here: ${n0(hw)} W (every card at its own maximum)`,
+    ];
   }
   async setBudget() {
     const watts = Math.round(Number(this.input.value));
     if (!Number.isFinite(watts) || watts <= 0) {
-      this.msg.className = 'msg b-msg err'; this.msg.textContent = 'Enter a positive number of watts.';
+      this.msg.className = 'msg b-msg err';
+      this.msg.textContent = 'Enter a positive number of watts.';
       return;
     }
-    this.msg.className = 'msg b-msg'; this.msg.textContent = 'Applying…';
+    this.msg.className = 'msg b-msg';
+    this.msg.textContent = 'Applying…';
     const resp = await apply(this.hv.id, { op: 'set_budget', watts });
     if (resp.ok) {
       const h = this.hv.h();
       if (h) h.daemon = resp;
-      this.msg.className = 'msg b-msg ok'; this.msg.textContent = `Budget set to ${n0(watts)} W.`;
+      this.msg.className = 'msg b-msg ok';
+      this.msg.textContent = `Budget set to ${n0(watts)} W.`;
       render();
     } else {
-      this.msg.className = 'msg b-msg err'; this.msg.textContent = resp.error || 'Request failed.';
+      this.msg.className = 'msg b-msg err';
+      this.msg.textContent = resp.error || 'Request failed.';
     }
   }
   render() {
-    const h = this.hv.h(), st = this.hv.st();
+    const h = this.hv.h(),
+      st = this.hv.st();
     this.root.hidden = !st || !powerSettable(st);
     if (this.root.hidden) return;
-    const used = st.budget_used_w, budget = st.budget_w, cards = this.hv.cards;
+    const used = st.budget_used_w,
+      budget = st.budget_w,
+      cards = this.hv.cards;
     this.used.textContent = n0(used);
     const left = budget == null ? null : budget - used;
-    this.subEl.textContent = st.preview ? 'monitor-only: the control daemon keeps this machine’s budget once installed'
-      : budget == null ? 'no combined budget is set on this machine'
-      : `of a ${n0(budget)} W combined GPU budget` + (left > 0 ? ` · ${n0(left)} W unallocated` : left === 0 ? ' · fully allocated' : ` · ${n0(-left)} W over`);
+    this.subEl.textContent = st.preview
+      ? 'monitor-only: the control daemon keeps this machine’s budget once installed'
+      : budget == null
+        ? 'no combined budget is set on this machine'
+        : `of a ${n0(budget)} W combined GPU budget` +
+          (left > 0 ? ` · ${n0(left)} W unallocated` : left === 0 ? ' · fully allocated' : ` · ${n0(-left)} W over`);
     if (document.activeElement !== this.input) this.input.value = budget ?? '';
     this.input.disabled = this.applyBtn.disabled = !this.hv.canEdit();
     const scale = Math.max(budget || 0, used) || 1;
-    this.bar.replaceChildren(...cards.map(c => {
-      const seg = el('span', { class: 's' + c.slot });
-      seg.style.width = (((c.d() && c.d().settings.power_w) || 0) / scale * 100) + '%';
-      return seg;
-    }));
-    this.legend.replaceChildren(...cards.filter(c => c.d()).map(c => el('span', {}, el('span', { class: `key s${c.slot}` }),
-      `${c.title.textContent || shortName(c.stat.name)} ${n0(c.d().settings.power_w)} W`)));
+    this.bar.replaceChildren(
+      ...cards.map(c => {
+        const seg = el('span', { class: 's' + c.slot });
+        seg.style.width = (((c.d() && c.d().settings.power_w) || 0) / scale) * 100 + '%';
+        return seg;
+      })
+    );
+    this.legend.replaceChildren(
+      ...cards
+        .filter(c => c.d())
+        .map(c =>
+          el(
+            'span',
+            {},
+            el('span', { class: `key s${c.slot}` }),
+            `${c.title.textContent || shortName(c.stat.name)} ${n0(c.d().settings.power_w)} W`
+          )
+        )
+    );
     const draw = cards.reduce((a, c) => a + (c.lv().power_w || 0), 0);
-    this.draw.replaceChildren(`${n0(draw)} W`, el('span', { class: 'sub' }, cards.length === 1 ? 'measured' : `all ${cards.length} cards, measured`));
-    const wall = h.wall, w = wallEstimate(wall, used);
+    this.draw.replaceChildren(
+      `${n0(draw)} W`,
+      el('span', { class: 'sub' }, cards.length === 1 ? 'measured' : `all ${cards.length} cards, measured`)
+    );
+    const wall = h.wall,
+      w = wallEstimate(wall, used);
     for (const r of this.wallRows) r.hidden = !wall;
     if (wall) {
-      this.wall.replaceChildren(`about ${n0(w)} W`, el('span', { class: 'sub' }, 'estimate, everything flat out at once'));
-      const c = wall.circuits || {}, names = Object.keys(c), fits = names.find(k => w <= c[k]);
-      this.circuit.replaceChildren(names.length ? (fits ? `Within a ${fits} circuit’s continuous rating` : 'Over every circuit rating listed') : 'no circuits listed',
-        el('span', { class: 'sub' }, names.map(k => `${k}: ${n0(c[k])} W continuous`).join(' · ')));
+      this.wall.replaceChildren(
+        `about ${n0(w)} W`,
+        el('span', { class: 'sub' }, 'estimate, everything flat out at once')
+      );
+      const c = wall.circuits || {},
+        names = Object.keys(c),
+        fits = names.find(k => w <= c[k]);
+      this.circuit.replaceChildren(
+        names.length
+          ? fits
+            ? `Within a ${fits} circuit’s continuous rating`
+            : 'Over every circuit rating listed'
+          : 'no circuits listed',
+        el('span', { class: 'sub' }, names.map(k => `${k}: ${n0(c[k])} W continuous`).join(' · '))
+      );
     }
     this.note.textContent = wall
       ? `The wall figure is an estimate from this machine’s “wall” setting in hosts.json: ${n0(wall.non_gpu_dc_w)} W for everything that isn’t a GPU, on top of the GPU caps, at ${Math.round(wall.psu_efficiency * 100)}% supply efficiency. Each card’s own maximum is not this machine’s safe maximum, which is why its cards share one budget.`
@@ -843,17 +1552,33 @@ class BudgetPanel {
 // ── one machine ──────────────────────────────────────────────────────────────────────────────
 class HostView {
   constructor(id) {
-    this.id = id; this.cards = []; this.cardKey = null;
+    this.id = id;
+    this.cards = [];
+    this.cardKey = null;
     this.banner = el('div', { class: 'banner', hidden: true });
     this.budget = new BudgetPanel(this);
     this.grid = el('section', { class: 'gpu-grid', 'aria-label': 'Cards' });
     this.empty = el('div', { class: 'panel empty' });
-    this.root = el('div', { class: 'hostview', id: `view-${id}`, role: 'tabpanel', 'data-host': id },
-      this.banner, this.budget.root, this.empty, this.grid);
+    this.root = el(
+      'div',
+      { class: 'hostview', id: `view-${id}`, role: 'tabpanel', 'data-host': id },
+      this.banner,
+      this.budget.root,
+      this.empty,
+      this.grid
+    );
   }
-  h() { return hostOf(this.id); }
-  st() { const h = this.h(); return h ? h.daemon : null; }
-  canEdit() { const h = this.h(); return !!h && h.conn === 'up' && !!h.daemon && !h.daemon.preview; }
+  h() {
+    return hostOf(this.id);
+  }
+  st() {
+    const h = this.h();
+    return h ? h.daemon : null;
+  }
+  canEdit() {
+    const h = this.h();
+    return !!h && h.conn === 'up' && !!h.daemon && !h.daemon.preview;
+  }
   render() {
     const h = this.h();
     if (!h) return;
@@ -861,57 +1586,120 @@ class HostView {
     if (h.daemon && key !== this.cardKey) {
       // Built once per set of GPUs and then only updated, so staged edits survive re-renders
       // and host switches; rebuilt only if that machine's GPUs actually change.
-      this.cards = h.static.map((g, i) => new GpuCard(this, g, (i % 4) + 1));   // cycle: only 4 colors exist
+      this.cards = h.static.map((g, i) => new GpuCard(this, g, (i % 4) + 1)); // cycle: only 4 colors exist
       this.grid.replaceChildren(...this.cards.map(c => c.root));
       this.cardKey = key;
     }
     for (const c of this.cards) c.stat = h.static.find(g => g.uuid === c.uuid) || c.stat;
     this.root.classList.toggle('offline', h.conn !== 'up');
     this.empty.hidden = this.cards.length > 0;
-    this.empty.textContent = h.conn === 'up' || h.conn === 'connecting'
-      ? (h.static.length || !h.daemon ? `Waiting for ${h.label}…` : `${h.label} reports no NVIDIA GPUs.`)
-      : `Nothing to show for ${h.label} yet.`;
+    this.empty.textContent =
+      h.conn === 'up' || h.conn === 'connecting'
+        ? h.static.length || !h.daemon
+          ? `Waiting for ${h.label}…`
+          : `${h.label} reports no NVIDIA GPUs.`
+        : `Nothing to show for ${h.label} yet.`;
     this.renderBanner(h);
-    for (const c of this.cards) { c.update(); c.sync(); }
+    for (const c of this.cards) {
+      c.update();
+      c.sync();
+    }
     this.budget.render();
   }
   renderBanner(h) {
-    const parts = [], st = h.daemon;
+    const parts = [],
+      st = h.daemon;
     let critical = false;
-    const install = h.remote ? `./install.sh --no-ui     (in a gpu-tuner checkout on ${h.label}; it asks for sudo there)`
+    const install = h.remote
+      ? `./install.sh --no-ui     (in a gpu-tuner checkout on ${h.label}; it asks for sudo there)`
       : './install.sh     (in the gpu-tuner checkout on this machine)';
     if (h.conn === 'down' || h.conn === 'incompatible') {
       critical = true;
       const seen = h.last_seen ? ` Last reading ${hhmm(h.last_seen, true)}.` : '';
       const retry = h.retry_in_s != null ? ` Retrying in ${h.retry_in_s} s.` : '';
-      parts.push(el('div', {}, el('strong', {}, h.conn === 'incompatible' ? `${h.label} runs an incompatible gpu-tuner` : `${h.label} is unreachable`),
-        `${h.error || 'The connection dropped.'}${seen}${retry} Its controls are locked until it answers again; whatever was last applied there stays in force.`));
+      parts.push(
+        el(
+          'div',
+          {},
+          el(
+            'strong',
+            {},
+            h.conn === 'incompatible' ? `${h.label} runs an incompatible gpu-tuner` : `${h.label} is unreachable`
+          ),
+          `${h.error || 'The connection dropped.'}${seen}${retry} Its controls are locked until it answers again; whatever was last applied there stays in force.`
+        )
+      );
     } else if (h.conn === 'stale') {
-      parts.push(el('div', {}, el('strong', {}, `No reading from ${h.label} for ${n0(h.live.age_s)} s`), 'The link is up but quiet; values below may be out of date.'));
+      parts.push(
+        el(
+          'div',
+          {},
+          el('strong', {}, `No reading from ${h.label} for ${n0(h.live.age_s)} s`),
+          'The link is up but quiet; values below may be out of date.'
+        )
+      );
     }
     // Nothing NVML would let a daemon set on any of this machine's GPUs (a GB10, say): no daemon needed.
-    const nothingSettable = st && st.gpus.length && !powerSettable(st) && !st.gpus.some(g => g.clock_range)
-      && !h.static.some(g => g.nfans);
+    const nothingSettable =
+      st && st.gpus.length && !powerSettable(st) && !st.gpus.some(g => g.clock_range) && !h.static.some(g => g.nfans);
     if (st && h.daemon_error === 'not installed' && nothingSettable) {
-      parts.push(el('div', {}, el('strong', {}, `Monitor-only, and that is all ${h.label} needs.`),
-        'NVML offers no power limit, fan control or clock cap on its GPUs, so there is nothing for the control daemon to do there.'));
+      parts.push(
+        el(
+          'div',
+          {},
+          el('strong', {}, `Monitor-only, and that is all ${h.label} needs.`),
+          'NVML offers no power limit, fan control or clock cap on its GPUs, so there is nothing for the control daemon to do there.'
+        )
+      );
     } else if (st && h.daemon_error === 'not installed') {
-      parts.push(el('div', {}, el('strong', {}, `Monitor-only: the control daemon is not installed on ${h.label}.`),
-        'Every reading and chart is live and each card’s safe ranges are shown, but the controls are locked. To unlock them, run:',
-        el('br'), el('code', {}, install)));
+      parts.push(
+        el(
+          'div',
+          {},
+          el('strong', {}, `Monitor-only: the control daemon is not installed on ${h.label}.`),
+          'Every reading and chart is live and each card’s safe ranges are shown, but the controls are locked. To unlock them, run:',
+          el('br'),
+          el('code', {}, install)
+        )
+      );
     } else if (st && h.daemon_error) {
       critical = true;
-      parts.push(el('div', {}, el('strong', {}, `The control daemon on ${h.label} is not answering.`),
-        `${h.daemon_error}. If it stopped, its fans are back on the driver’s own curve and its power caps are still in place. Check there: `,
-        el('code', {}, 'systemctl status gpu-tunerd')));
+      parts.push(
+        el(
+          'div',
+          {},
+          el('strong', {}, `The control daemon on ${h.label} is not answering.`),
+          `${h.daemon_error}. If it stopped, its fans are back on the driver’s own curve and its power caps are still in place. Check there: `,
+          el('code', {}, 'systemctl status gpu-tunerd')
+        )
+      );
     }
-    if (st && st.dry_run) parts.push(el('div', {}, el('strong', {}, 'Dry-run daemon.'), 'Changes are validated and logged exactly as they would be, but nothing is written to the cards.'));
+    if (st && st.dry_run)
+      parts.push(
+        el(
+          'div',
+          {},
+          el('strong', {}, 'Dry-run daemon.'),
+          'Changes are validated and logged exactly as they would be, but nothing is written to the cards.'
+        )
+      );
     for (const w of (st && st.warnings) || []) parts.push(el('div', {}, el('strong', {}, 'Daemon warning'), w));
     for (const n of h.notes || []) parts.push(el('div', {}, el('strong', {}, 'Connection note'), n));
     if (h.node && h.node.skew_s != null && Math.abs(h.node.skew_s) > 2)
-      parts.push(el('div', {}, el('strong', {}, `${h.label}’s clock is ${n1(Math.abs(h.node.skew_s))} s ${h.node.skew_s > 0 ? 'ahead' : 'behind'}`),
-        'Charts use this machine’s clock, so they are unaffected; check NTP there if it matters elsewhere.'));
-    this.banner.hidden = !parts.length; this.banner.className = 'banner' + (critical ? ' critical' : '');
+      parts.push(
+        el(
+          'div',
+          {},
+          el(
+            'strong',
+            {},
+            `${h.label}’s clock is ${n1(Math.abs(h.node.skew_s))} s ${h.node.skew_s > 0 ? 'ahead' : 'behind'}`
+          ),
+          'Charts use this machine’s clock, so they are unaffected; check NTP there if it matters elsewhere.'
+        )
+      );
+    this.banner.hidden = !parts.length;
+    this.banner.className = 'banner' + (critical ? ' critical' : '');
     this.banner.replaceChildren(...parts);
   }
 }
@@ -931,36 +1719,73 @@ function linkChip(h) {
 }
 
 function renderFleet() {
-  const box = $('#fleet'), hosts = S.st.hosts;
+  const box = $('#fleet'),
+    hosts = S.st.hosts;
   box.hidden = !multi();
   if (box.hidden) return;
   // Link sits next to the machine so a phone shows who is up without scrolling the table.
-  const head = el('thead', {}, el('tr', {}, ...['Machine', 'Link', 'GPU', 'Temp', 'Power', 'Util', 'Clock', 'Fan']
-    .map(t => el('th', { scope: 'col' }, t))));
+  const head = el(
+    'thead',
+    {},
+    el(
+      'tr',
+      {},
+      ...['Machine', 'Link', 'GPU', 'Temp', 'Power', 'Util', 'Clock', 'Fan'].map(t => el('th', { scope: 'col' }, t))
+    )
+  );
   const rows = [];
   for (const h of hosts) {
-    const [kind, text] = linkChip(h), off = h.conn !== 'up';
-    const pick = el('button', { class: 'linkish', type: 'button', 'aria-current': String(h.id === S.sel),
-      onclick: () => select(h.id, true) }, h.label);
+    const [kind, text] = linkChip(h),
+      off = h.conn !== 'up';
+    const pick = el(
+      'button',
+      { class: 'linkish', type: 'button', 'aria-current': String(h.id === S.sel), onclick: () => select(h.id, true) },
+      h.label
+    );
     const chip = el('span', { class: 'chip ' + kind }, text);
     if (!h.static.length) {
-      rows.push(el('tr', { class: off ? 'off' : '' }, el('td', {}, pick), el('td', {}, chip),
-        el('td', { colspan: 6, class: 'sub' }, h.error || (h.conn === 'up' ? 'no NVIDIA GPUs reported' : 'no data yet'))));
+      rows.push(
+        el(
+          'tr',
+          { class: off ? 'off' : '' },
+          el('td', {}, pick),
+          el('td', {}, chip),
+          el(
+            'td',
+            { colspan: 6, class: 'sub' },
+            h.error || (h.conn === 'up' ? 'no NVIDIA GPUs reported' : 'no data yet')
+          )
+        )
+      );
       continue;
     }
     h.static.forEach((g, i) => {
-      const lv = h.live.gpus[g.uuid] || {}, fans = (lv.fans || []).filter(v => v != null);
+      const lv = h.live.gpus[g.uuid] || {},
+        fans = (lv.fans || []).filter(v => v != null);
       const prof = h.daemon && h.daemon.gpus.find(x => x.uuid === g.uuid);
       const name = (prof && prof.profile && prof.profile.label) || shortName(g.name);
-      rows.push(el('tr', { class: (off ? 'off ' : '') + (i ? 'cont' : '') },
-        el('td', {}, i ? el('span', { class: 'sr' }, h.label) : pick),
-        el('td', {}, i ? '' : chip),
-        el('td', {}, name),
-        el('td', {}, (lv.temp != null ? `${n0(lv.temp)} °C` : '–') + (lv.soc_temp != null ? ` · SoC ${n0(lv.soc_temp)} °C` : '')),
-        el('td', {}, lv.power_limit_w != null ? `${n0(lv.power_w)} / ${n0(lv.power_limit_w)} W` : `${n0(lv.power_w)} W`),
-        el('td', {}, lv.util != null ? `${n0(lv.util)} %` : '–'),
-        el('td', {}, lv.clock_mhz != null ? `${n0(lv.clock_mhz)} MHz` : '–'),
-        el('td', {}, fans.length ? `${n0(Math.max(...fans))} %` : '–')));
+      rows.push(
+        el(
+          'tr',
+          { class: (off ? 'off ' : '') + (i ? 'cont' : '') },
+          el('td', {}, i ? el('span', { class: 'sr' }, h.label) : pick),
+          el('td', {}, i ? '' : chip),
+          el('td', {}, name),
+          el(
+            'td',
+            {},
+            (lv.temp != null ? `${n0(lv.temp)} °C` : '–') + (lv.soc_temp != null ? ` · SoC ${n0(lv.soc_temp)} °C` : '')
+          ),
+          el(
+            'td',
+            {},
+            lv.power_limit_w != null ? `${n0(lv.power_w)} / ${n0(lv.power_limit_w)} W` : `${n0(lv.power_w)} W`
+          ),
+          el('td', {}, lv.util != null ? `${n0(lv.util)} %` : '–'),
+          el('td', {}, lv.clock_mhz != null ? `${n0(lv.clock_mhz)} MHz` : '–'),
+          el('td', {}, fans.length ? `${n0(Math.max(...fans))} %` : '–')
+        )
+      );
     });
   }
   $('#fleet-table').replaceChildren(head, el('tbody', {}, ...rows));
@@ -973,26 +1798,49 @@ function renderTabs() {
   const key = JSON.stringify([S.sel, S.st.hosts.map(h => [h.id, h.label, linkChip(h)[0]])]);
   if (key === S.tabKey) return;
   S.tabKey = key;
-  nav.replaceChildren(...S.st.hosts.map(h => el('button', { type: 'button', role: 'tab', class: 'tab',
-    id: `tab-${h.id}`, 'aria-controls': `view-${h.id}`, 'aria-selected': String(h.id === S.sel),
-    tabindex: h.id === S.sel ? 0 : -1, onclick: () => select(h.id, true),
-    onkeydown: e => {
-      const ids = S.st.hosts.map(x => x.id), i = ids.indexOf(h.id);
-      const j = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: ids.length - 1 }[e.key];
-      if (j == null) return;
-      e.preventDefault();
-      select(ids[(j + ids.length) % ids.length], true);
-      const b = document.getElementById(`tab-${S.sel}`); if (b) b.focus();
-    } }, el('span', { class: 'dot ' + linkChip(h)[0], title: linkChip(h)[1], 'aria-label': linkChip(h)[1] }), h.label)));
+  nav.replaceChildren(
+    ...S.st.hosts.map(h =>
+      el(
+        'button',
+        {
+          type: 'button',
+          role: 'tab',
+          class: 'tab',
+          id: `tab-${h.id}`,
+          'aria-controls': `view-${h.id}`,
+          'aria-selected': String(h.id === S.sel),
+          tabindex: h.id === S.sel ? 0 : -1,
+          onclick: () => select(h.id, true),
+          onkeydown: e => {
+            const ids = S.st.hosts.map(x => x.id),
+              i = ids.indexOf(h.id);
+            const j = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: ids.length - 1 }[e.key];
+            if (j == null) return;
+            e.preventDefault();
+            select(ids[(j + ids.length) % ids.length], true);
+            const b = document.getElementById(`tab-${S.sel}`);
+            if (b) b.focus();
+          },
+        },
+        el('span', { class: 'dot ' + linkChip(h)[0], title: linkChip(h)[1], 'aria-label': linkChip(h)[1] }),
+        h.label
+      )
+    )
+  );
 }
 
 function select(id, user) {
   if (!hostOf(id) || id === S.sel) return;
   S.sel = id;
   if (user) {
-    try { history.replaceState(null, '', '#host=' + encodeURIComponent(id)); } catch (e) { /* ignore */ }
+    try {
+      history.replaceState(null, '', '#host=' + encodeURIComponent(id));
+    } catch (e) {
+      /* ignore */
+    }
   }
-  S.hist = null; S.hoverT = null;
+  S.hist = null;
+  S.hoverT = null;
   for (const c of S.charts) c.root.classList.add('loading');
   render();
   pollHistory(true);
@@ -1018,37 +1866,82 @@ const series = (c, k) => (S.hist && S.hist.gpus[c.uuid] ? S.hist.gpus[c.uuid][k]
 
 function niceMax(v) {
   if (!(v > 0)) return 1;
-  const raw = v / 4, mag = 10 ** Math.floor(Math.log10(raw));
+  const raw = v / 4,
+    mag = 10 ** Math.floor(Math.log10(raw));
   const step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(s => s >= raw);
   return step * Math.ceil(v / step);
 }
 
 class Chart {
   constructor(def) {
-    this.def = def; this.H = 190; this.M = { l: 44, r: 14, t: 10, b: 22 };
+    this.def = def;
+    this.H = 190;
+    this.M = { l: 44, r: 14, t: 10, b: 22 };
     this.legend = el('span', { class: 'legend' });
-    this.svg = sv('svg', { tabindex: 0, role: 'img', 'aria-label': `${def.title} history; use the left and right arrow keys to read values` });
+    this.svg = sv('svg', {
+      tabindex: 0,
+      role: 'img',
+      'aria-label': `${def.title} history; use the left and right arrow keys to read values`,
+    });
     this.tip = el('div', { class: 'tip', hidden: true });
-    this.root = el('figure', { class: 'chart' },
-      el('figcaption', {}, el('span', { class: 'title' }, def.title + ' ', el('small', {}, def.unit + (def.hint ? ' · ' + def.hint : ''))), this.legend),
-      this.svg, this.tip);
-    this.svg.addEventListener('pointermove', e => { this.own = true; setHover(this.tAt(e)); });
-    this.svg.addEventListener('pointerleave', () => { this.own = false; setHover(null); });
-    this.svg.addEventListener('blur', () => { this.own = false; setHover(null); });
+    this.root = el(
+      'figure',
+      { class: 'chart' },
+      el(
+        'figcaption',
+        {},
+        el('span', { class: 'title' }, def.title + ' ', el('small', {}, def.unit + (def.hint ? ' · ' + def.hint : ''))),
+        this.legend
+      ),
+      this.svg,
+      this.tip
+    );
+    this.svg.addEventListener('pointermove', e => {
+      this.own = true;
+      setHover(this.tAt(e));
+    });
+    this.svg.addEventListener('pointerleave', () => {
+      this.own = false;
+      setHover(null);
+    });
+    this.svg.addEventListener('blur', () => {
+      this.own = false;
+      setHover(null);
+    });
     this.svg.addEventListener('keydown', e => {
-      const h = S.hist; if (!h || !h.t.length || !['ArrowLeft', 'ArrowRight'].includes(e.key)) return;
-      e.preventDefault(); this.own = true;
-      const i = S.hoverT == null ? h.t.length - 1 : clamp(nearestIdx(h.t, S.hoverT) + (e.key === 'ArrowLeft' ? -1 : 1), 0, h.t.length - 1);
+      const h = S.hist;
+      if (!h || !h.t.length || !['ArrowLeft', 'ArrowRight'].includes(e.key)) return;
+      e.preventDefault();
+      this.own = true;
+      const i =
+        S.hoverT == null
+          ? h.t.length - 1
+          : clamp(nearestIdx(h.t, S.hoverT) + (e.key === 'ArrowLeft' ? -1 : 1), 0, h.t.length - 1);
       setHover(h.t[i]);
     });
     new ResizeObserver(() => this.draw()).observe(this.root);
   }
-  tAt(e) { const r = this.svg.getBoundingClientRect(); return this.t0 + (e.clientX - r.left - this.M.l) / (this.W - this.M.l - this.M.r) * (this.t1 - this.t0); }
-  px(t) { return this.M.l + (t - this.t0) / (this.t1 - this.t0) * (this.W - this.M.l - this.M.r); }
-  py(v) { return this.M.t + (1 - (v - this.lo) / (this.hi - this.lo)) * (this.H - this.M.t - this.M.b); }
+  tAt(e) {
+    const r = this.svg.getBoundingClientRect();
+    return this.t0 + ((e.clientX - r.left - this.M.l) / (this.W - this.M.l - this.M.r)) * (this.t1 - this.t0);
+  }
+  px(t) {
+    return this.M.l + ((t - this.t0) / (this.t1 - this.t0)) * (this.W - this.M.l - this.M.r);
+  }
+  py(v) {
+    return this.M.t + (1 - (v - this.lo) / (this.hi - this.lo)) * (this.H - this.M.t - this.M.b);
+  }
   path(ts, vals) {
-    let d = '', pen = false;
-    vals.forEach((v, i) => { if (v == null) { pen = false; return; } d += `${pen ? 'L' : 'M'}${this.px(ts[i]).toFixed(1)},${this.py(v).toFixed(1)}`; pen = true; });
+    let d = '',
+      pen = false;
+    vals.forEach((v, i) => {
+      if (v == null) {
+        pen = false;
+        return;
+      }
+      d += `${pen ? 'L' : 'M'}${this.px(ts[i]).toFixed(1)},${this.py(v).toFixed(1)}`;
+      pen = true;
+    });
     return d;
   }
   draw() {
@@ -1056,15 +1949,21 @@ class Chart {
     // before the width check: a hidden chart has no width, and must still be able to come back.
     const cards = selCards();
     this.root.hidden = this.def.key === 'fan' && cards.length > 0 && !cards.some(c => c.stat.nfans);
-    const h = S.hist; this.W = this.svg.clientWidth;
+    const h = S.hist;
+    this.W = this.svg.clientWidth;
     if (!h || !this.W) return;
-    const def = this.def, k = def.key, g = [];
-    this.t1 = h.t.length ? h.t[h.t.length - 1] : Date.now() / 1000; this.t0 = this.t1 - h.window;
+    const def = this.def,
+      k = def.key,
+      g = [];
+    this.t1 = h.t.length ? h.t[h.t.length - 1] : Date.now() / 1000;
+    this.t0 = this.t1 - h.window;
     const all = cards.flatMap(c => [...series(c, k), ...(def.cap ? series(c, 'cap') : [])]).filter(v => v != null);
     [this.lo, this.hi] = def.domain || [0, niceMax(Math.max(1, ...all))];
-    this.svg.setAttribute('viewBox', `0 0 ${this.W} ${this.H}`); this.svg.setAttribute('height', this.H);
+    this.svg.setAttribute('viewBox', `0 0 ${this.W} ${this.H}`);
+    this.svg.setAttribute('height', this.H);
     for (let i = 0; i <= 4; i++) {
-      const v = this.lo + (this.hi - this.lo) * i / 4, y = this.py(v);
+      const v = this.lo + ((this.hi - this.lo) * i) / 4,
+        y = this.py(v);
       g.push(sv('line', { class: i ? 'gridline' : 'axisline', x1: this.M.l, x2: this.W - this.M.r, y1: y, y2: y }));
       g.push(sv('text', { x: this.M.l - 6, y: y + 4, 'text-anchor': 'end' }, n0(v)));
     }
@@ -1077,8 +1976,12 @@ class Chart {
       const refs = cards.map(c => thermalRef(c.stat.thresholds)).filter(Boolean);
       const ref = refs.reduce((a, b) => (!a || b.v < a.v ? b : a), null);
       if (ref) {
-        g.push(sv('line', { class: 'ref', x1: this.M.l, x2: this.W - this.M.r, y1: this.py(ref.v), y2: this.py(ref.v) }));
-        g.push(sv('text', { x: this.W - this.M.r, y: this.py(ref.v) - 4, 'text-anchor': 'end' }, `${ref.name} ${ref.v} °C`));
+        g.push(
+          sv('line', { class: 'ref', x1: this.M.l, x2: this.W - this.M.r, y1: this.py(ref.v), y2: this.py(ref.v) })
+        );
+        g.push(
+          sv('text', { x: this.W - this.M.r, y: this.py(ref.v) - 4, 'text-anchor': 'end' }, `${ref.name} ${ref.v} °C`)
+        );
       }
     }
     for (const c of cards) {
@@ -1086,7 +1989,8 @@ class Chart {
       if (def.cap) g.push(sv('path', { class: `capline s${c.slot}`, d: this.path(h.t, series(c, 'cap')) }));
       if (def.soc) g.push(sv('path', { class: `socline s${c.slot}`, d: this.path(h.t, series(c, 'soc')) }));
       g.push(sv('path', { class: `line s${c.slot}`, d: this.path(h.t, s) }));
-      let j = s.length - 1; while (j >= 0 && s[j] == null) j--;
+      let j = s.length - 1;
+      while (j >= 0 && s[j] == null) j--;
       if (j >= 0) g.push(sv('circle', { class: `dot s${c.slot}`, cx: this.px(h.t[j]), cy: this.py(s[j]), r: 4 }));
     }
     this.hover = sv('g');
@@ -1096,20 +2000,34 @@ class Chart {
     this.drawHover();
   }
   drawHover() {
-    const h = S.hist; if (!h || !this.hover) return;
-    const k = this.def.key, n = h.t.length, cards = selCards();
+    const h = S.hist;
+    if (!h || !this.hover) return;
+    const k = this.def.key,
+      n = h.t.length,
+      cards = selCards();
     const i = S.hoverT != null && n ? nearestIdx(h.t, S.hoverT) : n - 1;
     const marks = [];
     if (S.hoverT != null && n) {
       const x = this.px(h.t[i]);
       marks.push(sv('line', { class: 'cross', x1: x, x2: x, y1: this.M.t, y2: this.H - this.M.b }));
-      for (const c of cards) { const v = series(c, k)[i]; if (v != null) marks.push(sv('circle', { class: `dot s${c.slot}`, cx: x, cy: this.py(v), r: 4 })); }
+      for (const c of cards) {
+        const v = series(c, k)[i];
+        if (v != null) marks.push(sv('circle', { class: `dot s${c.slot}`, cx: x, cy: this.py(v), r: 4 }));
+      }
     }
     this.hover.replaceChildren(...marks);
     // the legend doubles as the readout: latest values, or the values under the crosshair
     const soc = c => (this.def.soc && n ? series(c, 'soc')[i] : null);
-    const keys = cards.map(c => el('span', {}, el('span', { class: `linekey s${c.slot}` }), cardName(c) + ' ',
-      el('b', {}, n ? n1(series(c, k)[i]) : '–'), soc(c) != null ? ` · SoC ${n1(soc(c))}` : ''));
+    const keys = cards.map(c =>
+      el(
+        'span',
+        {},
+        el('span', { class: `linekey s${c.slot}` }),
+        cardName(c) + ' ',
+        el('b', {}, n ? n1(series(c, k)[i]) : '–'),
+        soc(c) != null ? ` · SoC ${n1(soc(c))}` : ''
+      )
+    );
     if (this.def.cap) keys.push(el('span', {}, el('span', { class: 'linekey cap s1' }), 'dashed: power cap'));
     if (this.def.soc && cards.some(c => series(c, 'soc').some(v => v != null)))
       keys.push(el('span', {}, el('span', { class: 'linekey soc s1' }), 'dotted: SoC (whole chip)'));
@@ -1117,52 +2035,115 @@ class Chart {
     const show = this.own && S.hoverT != null && n;
     this.tip.hidden = !show;
     if (show) {
-      this.tip.replaceChildren(el('div', { class: 'when' }, hhmm(h.t[i], true)), ...cards.map(c => el('div', { class: 'r' },
-        el('span', { class: `linekey s${c.slot}` }), el('b', {}, `${n1(series(c, k)[i])} ${this.def.unit}`), el('span', { class: 'n' }, cardName(c)),
-        this.def.cap ? el('span', { class: 'n' }, ` · cap ${n0(series(c, 'cap')[i])} W`) : null,
-        soc(c) != null ? el('span', { class: 'n' }, ` · SoC ${n1(soc(c))} °C`) : null)));
-      const x = this.px(h.t[i]), flip = x > this.W * 0.6;
-      this.tip.style.left = flip ? '' : (x + 24) + 'px';
-      this.tip.style.right = flip ? (this.W - x + 24) + 'px' : '';
+      this.tip.replaceChildren(
+        el('div', { class: 'when' }, hhmm(h.t[i], true)),
+        ...cards.map(c =>
+          el(
+            'div',
+            { class: 'r' },
+            el('span', { class: `linekey s${c.slot}` }),
+            el('b', {}, `${n1(series(c, k)[i])} ${this.def.unit}`),
+            el('span', { class: 'n' }, cardName(c)),
+            this.def.cap ? el('span', { class: 'n' }, ` · cap ${n0(series(c, 'cap')[i])} W`) : null,
+            soc(c) != null ? el('span', { class: 'n' }, ` · SoC ${n1(soc(c))} °C`) : null
+          )
+        )
+      );
+      const x = this.px(h.t[i]),
+        flip = x > this.W * 0.6;
+      this.tip.style.left = flip ? '' : x + 24 + 'px';
+      this.tip.style.right = flip ? this.W - x + 24 + 'px' : '';
     }
   }
 }
 function nearestIdx(ts, t) {
-  let lo = 0, hi = ts.length - 1;
-  while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (ts[mid] < t) lo = mid; else hi = mid; }
+  let lo = 0,
+    hi = ts.length - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (ts[mid] < t) lo = mid;
+    else hi = mid;
+  }
   return Math.abs(ts[lo] - t) <= Math.abs(ts[hi] - t) ? lo : hi;
 }
-function setHover(t) { S.hoverT = t; for (const c of S.charts) c.drawHover(); }
+function setHover(t) {
+  S.hoverT = t;
+  for (const c of S.charts) c.drawHover();
+}
 
 function renderTable() {
-  const box = $('#table'), h = S.hist, cards = selCards();
+  const box = $('#table'),
+    h = S.hist,
+    cards = selCards();
   if (!S.tableOpen || !h) return;
   const cols = CHARTS.map(c => `${c.title} (${c.unit})`);
-  const head = el('thead', {},
-    el('tr', {}, el('th', {}, ''), ...cards.map(c => el('th', { colspan: cols.length }, el('span', { class: `key s${c.slot}` }), cardName(c)))),
-    el('tr', {}, el('th', {}, 'Time'), ...cards.flatMap(() => cols.map(t => el('th', {}, t)))));
+  const head = el(
+    'thead',
+    {},
+    el(
+      'tr',
+      {},
+      el('th', {}, ''),
+      ...cards.map(c => el('th', { colspan: cols.length }, el('span', { class: `key s${c.slot}` }), cardName(c)))
+    ),
+    el('tr', {}, el('th', {}, 'Time'), ...cards.flatMap(() => cols.map(t => el('th', {}, t))))
+  );
   const rows = [];
   for (let i = h.t.length - 1; i >= Math.max(0, h.t.length - 60); i--) {
-    rows.push(el('tr', {}, el('td', {}, hhmm(h.t[i], true)), ...cards.flatMap(c => CHARTS.map(ch => el('td', {}, n1(series(c, ch.key)[i]))))));
+    rows.push(
+      el(
+        'tr',
+        {},
+        el('td', {}, hhmm(h.t[i], true)),
+        ...cards.flatMap(c => CHARTS.map(ch => el('td', {}, n1(series(c, ch.key)[i]))))
+      )
+    );
   }
-  box.replaceChildren(rows.length ? el('table', {}, head, el('tbody', {}, ...rows)) : el('div', { class: 'empty' }, 'No samples yet.'));
+  box.replaceChildren(
+    rows.length ? el('table', {}, head, el('tbody', {}, ...rows)) : el('div', { class: 'empty' }, 'No samples yet.')
+  );
 }
 
 // ── page ─────────────────────────────────────────────────────────────────────────────────────
 function buildOnce() {
-  $('#fleet-h').append(' ', info('machines', 'the machines table', () => [`${S.st.hosts.length} machines`,
-    `${S.st.hosts.filter(h => h.conn === 'up').length} connected now`], 'Now'));
+  $('#fleet-h').append(
+    ' ',
+    info(
+      'machines',
+      'the machines table',
+      () => [`${S.st.hosts.length} machines`, `${S.st.hosts.filter(h => h.conn === 'up').length} connected now`],
+      'Now'
+    )
+  );
   $('#tabs-row').append(info('machine-tabs', 'the machine tabs'));
   $('#hist-h').after(info('history', 'the history charts'));
   S.charts = CHARTS.map(d => new Chart(d));
   $('#charts').replaceChildren(...S.charts.map(c => c.root));
   const label = s => (s < 3600 ? `${s / 60} min` : `${s / 3600} h`);
-  $('#windows').replaceChildren(...S.st.windows.map(w => el('button', { type: 'button', 'data-w': w, 'aria-pressed': String(w === S.win),
-    onclick: () => { S.win = w; for (const b of $('#windows').children) b.setAttribute('aria-pressed', String(+b.dataset.w === w));
-      for (const c of S.charts) c.root.classList.add('loading'); pollHistory(true); } }, label(w))));
+  $('#windows').replaceChildren(
+    ...S.st.windows.map(w =>
+      el(
+        'button',
+        {
+          type: 'button',
+          'data-w': w,
+          'aria-pressed': String(w === S.win),
+          onclick: () => {
+            S.win = w;
+            for (const b of $('#windows').children) b.setAttribute('aria-pressed', String(+b.dataset.w === w));
+            for (const c of S.charts) c.root.classList.add('loading');
+            pollHistory(true);
+          },
+        },
+        label(w)
+      )
+    )
+  );
   $('#table-toggle').addEventListener('click', e => {
-    S.tableOpen = !S.tableOpen; $('#table').hidden = !S.tableOpen;
-    e.target.textContent = S.tableOpen ? 'Hide table' : 'Show as table'; e.target.setAttribute('aria-expanded', String(S.tableOpen));
+    S.tableOpen = !S.tableOpen;
+    $('#table').hidden = !S.tableOpen;
+    e.target.textContent = S.tableOpen ? 'Hide table' : 'Show as table';
+    e.target.setAttribute('aria-expanded', String(S.tableOpen));
     renderTable();
   });
   addEventListener('hashchange', () => {
@@ -1173,21 +2154,38 @@ function buildOnce() {
 
 function render() {
   if (!S.st) return;
-  if (!S.charts.length) { pickInitialHost(); buildOnce(); }
+  if (!S.charts.length) {
+    pickInitialHost();
+    buildOnce();
+  }
   if (!hostOf(S.sel)) S.sel = S.st.hosts[0].id;
   const box = $('#hosts');
   for (const h of S.st.hosts) {
-    if (!S.views.has(h.id)) { const v = new HostView(h.id); S.views.set(h.id, v); box.append(v.root); }
+    if (!S.views.has(h.id)) {
+      const v = new HostView(h.id);
+      S.views.set(h.id, v);
+      box.append(v.root);
+    }
   }
   for (const [id, v] of S.views) v.root.hidden = id !== S.sel;
-  const h = hostOf(S.sel), node = h.node || {};
-  $('#meta').textContent = (multi() ? `${h.label} · ` : '') + `driver ${node.driver || '–'} · gpu-tuner ${S.st.version}`;
+  const h = hostOf(S.sel),
+    node = h.node || {};
+  $('#meta').textContent =
+    (multi() ? `${h.label} · ` : '') + `driver ${node.driver || '–'} · gpu-tuner ${S.st.version}`;
   $('#hist-h').textContent = multi() ? `History · ${h.label}` : 'History';
-  const g = $('#banner'), warns = S.st.warnings || [];
+  const g = $('#banner'),
+    warns = S.st.warnings || [];
   const notes = warns.map(w => el('div', {}, el('strong', {}, 'Configuration'), w));
-  if (S.st.demo) notes.unshift(el('div', {}, el('strong', {}, 'Demo mode'),
-    'Three simulated machines. Changes go through the same safety checks as on real hardware, then ' +
-    'land on simulated cards: nothing on this page reads or changes a real GPU.'));
+  if (S.st.demo)
+    notes.unshift(
+      el(
+        'div',
+        {},
+        el('strong', {}, 'Demo mode'),
+        'Three simulated machines. Changes go through the same safety checks as on real hardware, then ' +
+          'land on simulated cards: nothing on this page reads or changes a real GPU.'
+      )
+    );
   g.hidden = !notes.length;
   g.replaceChildren(...notes);
   renderFleet();
@@ -1198,15 +2196,19 @@ function render() {
 function setConn() {
   const c = $('#conn');
   let kind, text;
-  if (!S.st) { kind = 'critical'; text = S.signedOut ? 'Signed out: run “gpu-tuner open”' : 'Server not responding'; }
-  else if (!multi()) [kind, text] = linkChip(S.st.hosts[0]);
+  if (!S.st) {
+    kind = 'critical';
+    text = S.signedOut ? 'Signed out: run “gpu-tuner open”' : 'Server not responding';
+  } else if (!multi()) [kind, text] = linkChip(S.st.hosts[0]);
   else {
-    const up = S.st.hosts.filter(h => h.conn === 'up').length, n = S.st.hosts.length;
+    const up = S.st.hosts.filter(h => h.conn === 'up').length,
+      n = S.st.hosts.length;
     kind = up === n ? 'good' : up ? 'warning' : 'critical';
     text = `Live · ${up} of ${n} machines`;
   }
   if (S.st && S.st.demo) text = 'Demo · ' + text;
-  c.className = 'chip ' + kind; c.textContent = text;
+  c.className = 'chip ' + kind;
+  c.textContent = text;
 }
 
 async function pollState() {
@@ -1224,7 +2226,8 @@ async function pollState() {
 let histTimer = null;
 async function pollHistory() {
   clearTimeout(histTimer);
-  const host = S.sel, win = S.win;
+  const host = S.sel,
+    win = S.win;
   if (host != null) {
     try {
       const h = await getJSON(`/api/history?host=${encodeURIComponent(host)}&window=${win}`);
@@ -1234,7 +2237,9 @@ async function pollHistory() {
         for (const c of S.charts) c.draw();
         renderTable();
       }
-    } catch (e) { /* the connection chip already says so */ }
+    } catch (e) {
+      /* the connection chip already says so */
+    }
   }
   histTimer = setTimeout(pollHistory, !S.hist ? 500 : S.win <= 900 ? 2000 : 10000);
 }
